@@ -60,7 +60,10 @@ def _registrar_link(name: str | None, fallback: str | None = None) -> str | None
 def _sync_live(db: Session) -> dict:
     """Upsert the live InvestorGain rows into SQLite (cached 10 minutes)."""
     try:
-        payload = IG.refresh_all()
+        # force=False honours the adapter's 10-minute cache so a burst of page
+        # views does not re-scrape InvestorGain on every request. The explicit
+        # /refresh-live endpoint forces the upstream feeds first.
+        payload = IG.refresh_all(force=False)
     except Exception:  # noqa: BLE001
         return {"ok": False, "count": 0}
     rows = payload.get("ipos") or []
@@ -384,6 +387,12 @@ def ipo_detail(slug: str, db: Session = Depends(get_db)):
         i.meta = merged
         db.commit()
         m = merged
+    # The GMP report omits the registrar; the offer page prints it. Persisting
+    # it here also gives live rows a working allotment-status link.
+    reg = scraped.get("registrar")
+    if reg and not i.registrar:
+        i.registrar = reg
+        db.commit()
     base = _row(i, db)
     live_sub = IG.subscription_for(i.name)
 

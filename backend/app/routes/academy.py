@@ -1565,9 +1565,23 @@ def ask_topic(req: AskTopicRequest, db: Session = Depends(get_db)):
                     "lesson": _topic_wire(row)}
     t0 = time.time()
     try:
-        result = complete(PROMPT.format(q=q), system=SYSTEM_PROMPT,
-                          max_tokens=1200, json_mode=True, route="academy")
-        data = extract_json(result.text)
+        # Thinking-capable models (Gemini 3.x Flash, Groq OSS builds) bill
+        # hidden reasoning tokens against maxOutputTokens. 1,200 was enough to
+        # truncate the five-card JSON on those models, so give the answer a
+        # generous budget and retry once with an explicit JSON-only nudge.
+        try:
+            result = complete(PROMPT.format(q=q), system=SYSTEM_PROMPT,
+                              max_tokens=4096, json_mode=True, route="academy")
+            data = extract_json(result.text)
+        except Exception:  # noqa: BLE001
+            result, data = None, None
+        if not data:
+            result = complete(
+                PROMPT.format(q=q) + "\nReturn ONLY the JSON object, no prose, "
+                "no markdown fences.",
+                system=SYSTEM_PROMPT, max_tokens=6000, json_mode=True,
+                route="academy-retry")
+            data = extract_json(result.text)
         if not data:
             raise ValueError("model did not return JSON")
         card = _normalise_card(q, data, result.provider, result.model)

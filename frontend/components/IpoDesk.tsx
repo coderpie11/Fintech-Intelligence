@@ -515,6 +515,40 @@ export function IpoDetail({ slug }: { slug: string }) {
         </div>
       </div>
 
+      <section className="card p-4 mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <div className="text-[13px] font-bold">Business overview</div>
+          <span className="chip !text-[9px]">offer document</span>
+        </div>
+        <p className="text-[12px] leading-relaxed">
+          {d.business_overview || d.note || "The company's business description is not published in the free offer-document feed."}
+        </p>
+        {(d.issue_objects || []).length > 0 && (
+          <div className="mt-3">
+            <div className="muted text-[10px] font-bold uppercase tracking-wider mb-1.5">
+              Objects of the issue
+            </div>
+            <div className="grid sm:grid-cols-2 gap-1.5">
+              {(d.issue_objects || []).map((o: any) => (
+                <div key={o.no} className="rounded-md px-2.5 py-2 text-[11px] leading-snug"
+                     style={{ border: "1px solid var(--line)", background: "var(--surface-2)" }}>
+                  <span className="accent font-bold">{o.no}.</span> {o.object}
+                  {o.amount_cr != null && (
+                    <span className="knum font-semibold ml-1">₹{Number(o.amount_cr).toLocaleString("en-IN")} Cr</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 muted text-[10.5px]">
+          <span>Board: <b style={{ color: "var(--ink)" }}>{d.board}</b></span>
+          <span>Registrar: <b style={{ color: "var(--ink)" }}>{d.registrar?.value || (typeof d.registrar === "string" ? d.registrar : "—")}</b></span>
+          <span>Lead manager: <b style={{ color: "var(--ink)" }}>{d.merchant_bankers?.[0]?.name || (typeof d.brlm?.[0] === "string" ? d.brlm[0] : d.brlm?.[0]?.name) || "—"}</b></span>
+          <span>Listing: <b style={{ color: "var(--ink)" }}>{d.listing ? fmtDate(d.listing) : "—"}</b></span>
+        </div>
+      </section>
+
       <section className="grid lg:grid-cols-[1fr_380px] gap-3 mb-6">
         <div className="card p-4">
           <div className="flex items-center justify-between gap-2 mb-2">

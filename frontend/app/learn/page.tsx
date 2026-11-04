@@ -85,6 +85,14 @@ export default function LearnPage() {
     setAiMeta(null);
     try {
       const r = await postJSON("/academy/ask-topic", { query: text, force });
+      if (r.source === "unavailable") {
+        // Never render a blank five-card shell. Keep the generate button so
+        // the reader can retry, and say plainly that the model did not answer.
+        setAi(null);
+        setAiMeta(null);
+        setAiErr(r.lesson?.error || "The AI teacher could not build this lesson. Please try again.");
+        return;
+      }
       setAi(r.lesson || null);
       setAiMeta({ source: r.source || "ai", latency: r.latency_ms || 0 });
     } catch (e: any) {
