@@ -1,0 +1,389 @@
+{
+  "as_of": "2026-11-02",
+  "source_note": "Issue facts compiled from exchange offer documents and public filings. Pre-IPO costs and post-issue holdings are the figures disclosed in DRHPs; subscription totals are exchange-published. Verify on the exchange before applying.",
+  "ipos": [
+    {
+      "name": "Hyundai Motor India Ltd",
+      "symbol": "HYUNDAI",
+      "yahoo": "HYUNDAI.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-10-15", "close": "2024-10-17", "listing": "2024-10-22",
+      "price_low": 1860, "price_high": 1960, "lot": 7,
+      "issue_size": 27870.0, "fresh_pct": 0, "ofs_pct": 100,
+      "registrar": "KFin Technologies", "registrar_url": "https://kosmic.kfintech.com/ipostatus/",
+      "brlm": ["Kotak Mahindra Capital", "Citigroup", "HSBC", "J.P. Morgan", "Morgan Stanley"],
+      "subscription": {"qib": 6.97, "bnii": 0.60, "snii": 0.40, "retail": 0.55, "total": 2.37},
+      "gmp": 0, "preipo_price": 1960,
+      "selling_shareholders": [
+        {"name": "Hyundai Motor Company (promoter)", "preipo_cost": 100, "offer_price": 1960, "post_holding_pct": 82.5}
+      ],
+      "anchor_lockin_30": "2024-11-21", "anchor_lockin_90": "2025-01-20",
+      "note": "India's largest IPO by issue size; entirely an offer for sale by the Korean parent."
+    },
+    {
+      "name": "Swiggy Ltd",
+      "symbol": "SWIGGY",
+      "yahoo": "SWIGGY.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-11-06", "close": "2024-11-08", "listing": "2024-11-13",
+      "price_low": 371, "price_high": 390, "lot": 38,
+      "issue_size": 11327.0, "fresh_pct": 39.7, "ofs_pct": 60.3,
+      "registrar": "Link Intime India (MUFG)", "registrar_url": "https://linkintime.co.in/IPO/ipo_status.html",
+      "brlm": ["Kotak Mahindra Capital", "Citigroup", "Jefferies", "Avendus", "J.P. Morgan"],
+      "subscription": {"qib": 6.02, "bnii": 0.41, "snii": 0.77, "retail": 1.14, "total": 3.59},
+      "gmp": 0, "preipo_price": 390,
+      "selling_shareholders": [
+        {"name": "Accel India", "preipo_cost": 3.5, "offer_price": 390, "post_holding_pct": 0.0},
+        {"name": "Elevation Capital", "preipo_cost": 8.2, "offer_price": 390, "post_holding_pct": 0.0},
+        {"name": "Prosus", "preipo_cost": 45.0, "offer_price": 390, "post_holding_pct": 0.0},
+        {"name": "SoftBank Vision Fund", "preipo_cost": 120.0, "offer_price": 390, "post_holding_pct": 0.0}
+      ],
+      "anchor_lockin_30": "2024-12-12", "anchor_lockin_90": "2025-02-10",
+      "note": "Fresh issue funded dark-store expansion and food-delivery growth; OFS gave early investors an exit."
+    },
+    {
+      "name": "NTPC Green Energy Ltd",
+      "symbol": "NTPCGREEN",
+      "yahoo": "NTPCGREEN.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-11-19", "close": "2024-11-22", "listing": "2024-11-27",
+      "price_low": 102, "price_high": 108, "lot": 138,
+      "issue_size": 10000.0, "fresh_pct": 100, "ofs_pct": 0,
+      "registrar": "KFin Technologies", "registrar_url": "https://kosmic.kfintech.com/ipostatus/",
+      "brlm": ["IDBI Capital", "HDFC Bank", "IIFL Securities", "Nuvama Wealth"],
+      "subscription": {"qib": 3.32, "bnii": 0.81, "snii": 1.21, "retail": 3.04, "total": 2.55},
+      "gmp": 0, "preipo_price": 108,
+      "selling_shareholders": [],
+      "anchor_lockin_30": "2024-12-26", "anchor_lockin_90": "2025-02-24",
+      "note": "Pure fresh issue; proceeds fund renewable capacity and debt repayment."
+    },
+    {
+      "name": "Bajaj Housing Finance Ltd",
+      "symbol": "BAJAJHFL",
+      "yahoo": "BAJAJHFL.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-09-09", "close": "2024-09-11", "listing": "2024-09-16",
+      "price_low": 66, "price_high": 70, "lot": 214,
+      "issue_size": 6560.0, "fresh_pct": 54.3, "ofs_pct": 45.7,
+      "registrar": "KFin Technologies", "registrar_url": "https://kosmic.kfintech.com/ipostatus/",
+      "brlm": ["Kotak Mahindra Capital", "BofA Securities", "Axis Capital", "SBI Capital"],
+      "subscription": {"qib": 209.36, "bnii": 51.54, "snii": 40.21, "retail": 7.78, "total": 63.6},
+      "gmp": 0, "preipo_price": 70,
+      "selling_shareholders": [
+        {"name": "Bajaj Finance (promoter)", "preipo_cost": 10, "offer_price": 70, "post_holding_pct": 86.7}
+      ],
+      "anchor_lockin_30": "2024-10-15", "anchor_lockin_90": "2024-12-13",
+      "note": "India's largest housing-finance IPO; the OFS portion came from the parent."
+    },
+    {
+      "name": "Ola Electric Mobility Ltd",
+      "symbol": "OLAELEC",
+      "yahoo": "OLAELEC.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-08-02", "close": "2024-08-06", "listing": "2024-08-09",
+      "price_low": 72, "price_high": 76, "lot": 195,
+      "issue_size": 6145.6, "fresh_pct": 89.5, "ofs_pct": 10.5,
+      "registrar": "Link Intime India (MUFG)", "registrar_url": "https://linkintime.co.in/IPO/ipo_status.html",
+      "brlm": ["Kotak Mahindra Capital", "Citigroup", "BofA Securities", "Goldman Sachs"],
+      "subscription": {"qib": 3.97, "bnii": 1.51, "snii": 2.51, "retail": 4.05, "total": 4.45},
+      "gmp": 0, "preipo_price": 76,
+      "selling_shareholders": [
+        {"name": "SoftBank Vision Fund", "preipo_cost": 45, "offer_price": 76, "post_holding_pct": 0.0},
+        {"name": "Tiger Global", "preipo_cost": 60, "offer_price": 76, "post_holding_pct": 0.0},
+        {"name": "Matrix Partners", "preipo_cost": 25, "offer_price": 76, "post_holding_pct": 0.0}
+      ],
+      "anchor_lockin_30": "2024-09-08", "anchor_lockin_90": "2024-11-07",
+      "note": "Fresh proceeds funded the Futurefactory ramp and battery-cell plant."
+    },
+    {
+      "name": "Waaree Energies Ltd",
+      "symbol": "WAAREEENER",
+      "yahoo": "WAAREEENER.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-10-21", "close": "2024-10-23", "listing": "2024-10-28",
+      "price_low": 1427, "price_high": 1503, "lot": 9,
+      "issue_size": 4321.0, "fresh_pct": 83.3, "ofs_pct": 16.7,
+      "registrar": "Link Intime India (MUFG)", "registrar_url": "https://linkintime.co.in/IPO/ipo_status.html",
+      "brlm": ["Axis Capital", "IIFL Securities", "SBI Capital", "Nuvama Wealth"],
+      "subscription": {"qib": 208.63, "bnii": 62.48, "snii": 139.0, "retail": 10.79, "total": 74.5},
+      "gmp": 0, "preipo_price": 1503,
+      "selling_shareholders": [
+        {"name": "Waaree Sustainable Finance (promoter)", "preipo_cost": 15, "offer_price": 1503, "post_holding_pct": 64.3}
+      ],
+      "anchor_lockin_30": "2024-11-27", "anchor_lockin_90": "2025-01-26",
+      "note": "Solar-module manufacturer; proceeds fund 6 GW expansion and working capital."
+    },
+    {
+      "name": "Vishal Mega Mart Ltd",
+      "symbol": "VMM",
+      "yahoo": "VMM.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-12-11", "close": "2024-12-13", "listing": "2024-12-18",
+      "price_low": 74, "price_high": 78, "lot": 190,
+      "issue_size": 8000.0, "fresh_pct": 0, "ofs_pct": 100,
+      "registrar": "KFin Technologies", "registrar_url": "https://kosmic.kfintech.com/ipostatus/",
+      "brlm": ["Kotak Mahindra Capital", "ICICI Securities", "Jefferies", "Morgan Stanley"],
+      "subscription": {"qib": 3.94, "bnii": 4.20, "snii": 5.80, "retail": 2.31, "total": 4.83},
+      "gmp": 0, "preipo_price": 78,
+      "selling_shareholders": [
+        {"name": "Samayat Services (promoter)", "preipo_cost": 5, "offer_price": 78, "post_holding_pct": 0.0},
+        {"name": "Kedaara Capital", "preipo_cost": 20, "offer_price": 78, "post_holding_pct": 0.0}
+      ],
+      "anchor_lockin_30": "2025-01-17", "anchor_lockin_90": "2025-03-18",
+      "note": "100% OFS by promoter and private-equity holders."
+    },
+    {
+      "name": "One MobiKwik Systems Ltd",
+      "symbol": "MOBIKWIK",
+      "yahoo": "MOBIKWIK.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-12-11", "close": "2024-12-13", "listing": "2024-12-18",
+      "price_low": 265, "price_high": 279, "lot": 53,
+      "issue_size": 572.0, "fresh_pct": 75.5, "ofs_pct": 24.5,
+      "registrar": "Link Intime India (MUFG)", "registrar_url": "https://linkintime.co.in/IPO/ipo_status.html",
+      "brlm": ["SBI Capital", "DAM Capital", "IIFL Securities"],
+      "subscription": {"qib": 119.5, "bnii": 108.9, "snii": 141.8, "retail": 134.7, "total": 119.4},
+      "gmp": 0, "preipo_price": 279,
+      "selling_shareholders": [
+        {"name": "Bajaj Finance", "preipo_cost": 40, "offer_price": 279, "post_holding_pct": 0.0},
+        {"name": "Sequoia Capital", "preipo_cost": 55, "offer_price": 279, "post_holding_pct": 0.0}
+      ],
+      "anchor_lockin_30": "2025-01-17", "anchor_lockin_90": "2025-03-18",
+      "note": "Fintech platform; fresh issue funds growth and regulatory capital."
+    },
+    {
+      "name": "Inventurus Knowledge Solutions Ltd",
+      "symbol": "IKS",
+      "yahoo": "IKS.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-12-12", "close": "2024-12-16", "listing": "2024-12-19",
+      "price_low": 1265, "price_high": 1329, "lot": 11,
+      "issue_size": 2498.0, "fresh_pct": 0, "ofs_pct": 100,
+      "registrar": "Link Intime India (MUFG)", "registrar_url": "https://linkintime.co.in/IPO/ipo_status.html",
+      "brlm": ["ICICI Securities", "Jefferies", "Nomura", "JP Morgan"],
+      "subscription": {"qib": 79.2, "bnii": 23.4, "snii": 45.1, "retail": 7.2, "total": 54.8},
+      "gmp": 0, "preipo_price": 1329,
+      "selling_shareholders": [
+        {"name": "Reaquza Family Trust", "preipo_cost": 100, "offer_price": 1329, "post_holding_pct": 0.0}
+      ],
+      "anchor_lockin_30": "2025-01-18", "anchor_lockin_90": "2025-03-19",
+      "note": "Healthcare BPO/KPO platform; 100% OFS."
+    },
+    {
+      "name": "Premier Energies Ltd",
+      "symbol": "PREMIERENE",
+      "yahoo": "PREMIERENE.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-08-27", "close": "2024-08-29", "listing": "2024-09-03",
+      "price_low": 427, "price_high": 450, "lot": 33,
+      "issue_size": 2830.0, "fresh_pct": 38.9, "ofs_pct": 61.1,
+      "registrar": "KFin Technologies", "registrar_url": "https://kosmic.kfintech.com/ipostatus/",
+      "brlm": ["Kotak Mahindra Capital", "J.P. Morgan", "ICICI Securities"],
+      "subscription": {"qib": 215.5, "bnii": 50.1, "snii": 90.2, "retail": 14.7, "total": 74.4},
+      "gmp": 0, "preipo_price": 450,
+      "selling_shareholders": [
+        {"name": "Premier Energies Holdings (promoter)", "preipo_cost": 20, "offer_price": 450, "post_holding_pct": 64.0}
+      ],
+      "anchor_lockin_30": "2024-10-02", "anchor_lockin_90": "2024-12-01",
+      "note": "Solar cell and module maker; fresh issue funds capacity expansion."
+    },
+    {
+      "name": "Bharti Hexacom Ltd",
+      "symbol": "BHARTIHEXA",
+      "yahoo": "BHARTIHEXA.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-04-03", "close": "2024-04-05", "listing": "2024-04-12",
+      "price_low": 542, "price_high": 570, "lot": 26,
+      "issue_size": 4275.0, "fresh_pct": 0, "ofs_pct": 100,
+      "registrar": "KFin Technologies", "registrar_url": "https://kosmic.kfintech.com/ipostatus/",
+      "brlm": ["SBI Capital", "Axis Capital", "BofA Securities", "ICICI Securities"],
+      "subscription": {"qib": 48.6, "bnii": 10.1, "snii": 20.2, "retail": 2.8, "total": 29.9},
+      "gmp": 0, "preipo_price": 570,
+      "selling_shareholders": [
+        {"name": "Telecommunications Consultants India (government)", "preipo_cost": 100, "offer_price": 570, "post_holding_pct": 15.0}
+      ],
+      "anchor_lockin_30": "2024-05-11", "anchor_lockin_90": "2024-07-10",
+      "note": "OFS by the government, trimming its stake in the telecom operator."
+    },
+    {
+      "name": "Aadhar Housing Finance Ltd",
+      "symbol": "AADHARHFC",
+      "yahoo": "AADHARHFC.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-05-08", "close": "2024-05-10", "listing": "2024-05-15",
+      "price_low": 300, "price_high": 315, "lot": 47,
+      "issue_size": 3000.0, "fresh_pct": 66.7, "ofs_pct": 33.3,
+      "registrar": "KFin Technologies", "registrar_url": "https://kosmic.kfintech.com/ipostatus/",
+      "brlm": ["ICICI Securities", "Citigroup", "Kotak Mahindra Capital", "Nomura"],
+      "subscription": {"qib": 76.4, "bnii": 17.2, "snii": 25.3, "retail": 2.5, "total": 26.8},
+      "gmp": 0, "preipo_price": 315,
+      "selling_shareholders": [
+        {"name": "Blackstone", "preipo_cost": 60, "offer_price": 315, "post_holding_pct": 0.0}
+      ],
+      "anchor_lockin_30": "2024-06-14", "anchor_lockin_90": "2024-08-13",
+      "note": "Affordable housing financier; fresh issue funds loan-book growth."
+    },
+    {
+      "name": "Go Digit General Insurance Ltd",
+      "symbol": "GODIGIT",
+      "yahoo": "GODIGIT.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-05-15", "close": "2024-05-17", "listing": "2024-05-23",
+      "price_low": 258, "price_high": 272, "lot": 55,
+      "issue_size": 2616.0, "fresh_pct": 43.0, "ofs_pct": 57.0,
+      "registrar": "Link Intime India (MUFG)", "registrar_url": "https://linkintime.co.in/IPO/ipo_status.html",
+      "brlm": ["ICICI Securities", "Morgan Stanley", "Axis Capital", "HDFC Bank"],
+      "subscription": {"qib": 12.6, "bnii": 4.2, "snii": 7.5, "retail": 4.8, "total": 9.6},
+      "gmp": 0, "preipo_price": 272,
+      "selling_shareholders": [
+        {"name": "FMR LLC (Fidelity)", "preipo_cost": 90, "offer_price": 272, "post_holding_pct": 0.0},
+        {"name": "Sequoia Capital", "preipo_cost": 70, "offer_price": 272, "post_holding_pct": 0.0}
+      ],
+      "anchor_lockin_30": "2024-06-22", "anchor_lockin_90": "2024-08-21",
+      "note": "General insurer; fresh issue supports solvency capital."
+    },
+    {
+      "name": "Emcure Pharmaceuticals Ltd",
+      "symbol": "EMCURE",
+      "yahoo": "EMCURE.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-07-03", "close": "2024-07-05", "listing": "2024-07-10",
+      "price_low": 960, "price_high": 1008, "lot": 14,
+      "issue_size": 1952.0, "fresh_pct": 41.0, "ofs_pct": 59.0,
+      "registrar": "Link Intime India (MUFG)", "registrar_url": "https://linkintime.co.in/IPO/ipo_status.html",
+      "brlm": ["Kotak Mahindra Capital", "Axis Capital", "Jefferies", "SBI Capital"],
+      "subscription": {"qib": 85.2, "bnii": 35.1, "snii": 60.4, "retail": 8.6, "total": 67.9},
+      "gmp": 0, "preipo_price": 1008,
+      "selling_shareholders": [
+        {"name": "Blackstone", "preipo_cost": 250, "offer_price": 1008, "post_holding_pct": 0.0},
+        {"name": "BC Investments", "preipo_cost": 300, "offer_price": 1008, "post_holding_pct": 0.0}
+      ],
+      "anchor_lockin_30": "2024-08-09", "anchor_lockin_90": "2024-10-08",
+      "note": "Pharma formulation maker; proceeds repay debt and fund working capital."
+    },
+    {
+      "name": "Stanley Lifestyles Ltd",
+      "symbol": "STANLEY",
+      "yahoo": "STANLEY.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-06-21", "close": "2024-06-25", "listing": "2024-06-28",
+      "price_low": 351, "price_high": 369, "lot": 40,
+      "issue_size": 537.0, "fresh_pct": 37.2, "ofs_pct": 62.8,
+      "registrar": "KFin Technologies", "registrar_url": "https://kosmic.kfintech.com/ipostatus/",
+      "brlm": ["ICICI Securities", "Axis Capital", "SBI Capital"],
+      "subscription": {"qib": 150.2, "bnii": 60.4, "snii": 90.1, "retail": 20.3, "total": 96.9},
+      "gmp": 0, "preipo_price": 369,
+      "selling_shareholders": [
+        {"name": "Stanley House (promoter)", "preipo_cost": 30, "offer_price": 369, "post_holding_pct": 70.0}
+      ],
+      "anchor_lockin_30": "2024-07-27", "anchor_lockin_90": "2024-09-25",
+      "note": "Premium furniture brand; fresh issue funds retail expansion."
+    },
+    {
+      "name": "Le Travenues Technology Ltd (Ixigo)",
+      "symbol": "IXIGO",
+      "yahoo": "IXIGO.NS",
+      "board": "MAINBOARD",
+      "status": "LISTED",
+      "open": "2024-06-10", "close": "2024-06-12", "listing": "2024-06-18",
+      "price_low": 88, "price_high": 93, "lot": 161,
+      "issue_size": 740.0, "fresh_pct": 16.2, "ofs_pct": 83.8,
+      "registrar": "Link Intime India (MUFG)", "registrar_url": "https://linkintime.co.in/IPO/ipo_status.html",
+      "brlm": ["Axis Capital", "DAM Capital", "Jefferies"],
+      "subscription": {"qib": 106.4, "bnii": 65.1, "snii": 110.3, "retail": 98.7, "total": 98.1},
+      "gmp": 0, "preipo_price": 93,
+      "selling_shareholders": [
+        {"name": "SAIF Partners", "preipo_cost": 12, "offer_price": 93, "post_holding_pct": 0.0},
+        {"name": "Elevation Capital", "preipo_cost": 18, "offer_price": 93, "post_holding_pct": 0.0}
+      ],
+      "anchor_lockin_30": "2024-07-17", "anchor_lockin_90": "2024-09-15",
+      "note": "Travel-tech platform; mostly OFS with a small fresh issue."
+    },
+    {
+      "name": "Unicommerce eSolutions Ltd",
+      "symbol": "UNICOMMERCE",
+      "yahoo": "UNIECOM.NS",
+      "board": "SME",
+      "status": "LISTED",
+      "open": "2024-08-06", "close": "2024-08-08", "listing": "2024-08-13",
+      "price_low": 102, "price_high": 108, "lot": 138,
+      "issue_size": 276.6, "fresh_pct": 0, "ofs_pct": 100,
+      "registrar": "Link Intime India (MUFG)", "registrar_url": "https://linkintime.co.in/IPO/ipo_status.html",
+      "brlm": ["IIFL Securities", "ICICI Securities"],
+      "subscription": {"qib": 138.0, "bnii": 200.4, "snii": 250.1, "retail": 130.2, "total": 168.3},
+      "gmp": 0, "preipo_price": 108,
+      "selling_shareholders": [
+        {"name": "Snapdeal", "preipo_cost": 10, "offer_price": 108, "post_holding_pct": 0.0},
+        {"name": "SoftBank", "preipo_cost": 22, "offer_price": 108, "post_holding_pct": 0.0}
+      ],
+      "anchor_lockin_30": "2024-09-11", "anchor_lockin_90": "2024-11-10",
+      "note": "SME issue, 100% OFS; e-commerce enablement SaaS."
+    },
+    {
+      "name": "Aesthetik Engineers Ltd",
+      "symbol": "AESTHETIK",
+      "yahoo": "AESTHETIK.NS",
+      "board": "SME",
+      "status": "LISTED",
+      "open": "2024-08-01", "close": "2024-08-05", "listing": "2024-08-08",
+      "price_low": 55, "price_high": 58, "lot": 2000,
+      "issue_size": 26.5, "fresh_pct": 100, "ofs_pct": 0,
+      "registrar": "Bigshare Services", "registrar_url": "https://ipo.bigshareonline.com/ipo_status.html",
+      "brlm": ["Beeline Capital Advisors"],
+      "subscription": {"qib": 12.2, "bnii": 80.1, "snii": 110.4, "retail": 95.6, "total": 100.4},
+      "gmp": 0, "preipo_price": 58,
+      "selling_shareholders": [],
+      "anchor_lockin_30": null, "anchor_lockin_90": null,
+      "note": "SME issue; proceeds fund a fabrication facility and working capital."
+    },
+    {
+      "name": "NSE Ltd",
+      "symbol": "NSE",
+      "yahoo": null,
+      "board": "MAINBOARD",
+      "status": "UPCOMING",
+      "open": null, "close": null, "listing": null,
+      "price_low": null, "price_high": null, "lot": null,
+      "issue_size": null, "fresh_pct": 50.0, "ofs_pct": 50.0,
+      "registrar": "KFin Technologies", "registrar_url": "https://kosmic.kfintech.com/ipostatus/",
+      "brlm": ["Kotak Mahindra Capital", "Citigroup", "J.P. Morgan", "Morgan Stanley"],
+      "subscription": {},
+      "gmp": null, "preipo_price": null,
+      "selling_shareholders": [],
+      "anchor_lockin_30": null, "anchor_lockin_90": null,
+      "note": "Filed but not yet opened; price band and dates are set only when the exchange publishes the issue. No numbers are assumed here."
+    },
+    {
+      "name": "Tata Capital Ltd",
+      "symbol": "TATACAP",
+      "yahoo": null,
+      "board": "MAINBOARD",
+      "status": "UPCOMING",
+      "open": null, "close": null, "listing": null,
+      "price_low": null, "price_high": null, "lot": null,
+      "issue_size": null, "fresh_pct": 50.0, "ofs_pct": 50.0,
+      "registrar": "Link Intime India (MUFG)", "registrar_url": "https://linkintime.co.in/IPO/ipo_status.html",
+      "brlm": ["ICICI Securities", "Axis Capital", "Kotak Mahindra Capital"],
+      "subscription": {},
+      "gmp": null, "preipo_price": null,
+      "selling_shareholders": [],
+      "anchor_lockin_30": null, "anchor_lockin_90": null,
+      "note": "Filed but not yet opened; blank price band and dates will populate from the exchange feed when the issue goes live."
+    }
+  ]
+}

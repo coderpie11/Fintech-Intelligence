@@ -1,0 +1,290 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+   Bharat Fintech Intelligence — institutional terminal design system
+   Dark (default) is a deep-navy trading terminal. Light is a clean research
+   desk. Both themes share the same semantic variables, so every component
+   flips automatically.
+   ========================================================================== */
+
+:root {
+  /* light mode — clean research desk */
+  --bg: #F1F5F9;
+  --surface: #FFFFFF;
+  --surface-2: #F8FAFC;
+  --hover: #E2E8F0;
+  --line: #CBD5E1;
+  --line-soft: #E2E8F0;
+  --ink: #0F172A;
+  --muted: #475569;
+  --accent: #0284C7;
+  --accent-2: #2563EB;
+  --up: #059669;
+  --down: #E11D48;
+  --warn: #D97706;
+  --stripe: #F8FAFC;
+  --nav-bg: rgba(241, 245, 249, 0.92);
+  --btn-primary-from: #0284C7;
+  --btn-primary-to: #0369A1;
+  --btn-secondary-bg: #FFFFFF;
+  --btn-secondary-ink: #0F172A;
+  --btn-secondary-line: #CBD5E1;
+  --tip-bg: #FFFFFF;
+  --tip-line: #CBD5E1;
+  --grid-line: rgba(15, 23, 42, 0.055);
+  --glow: rgba(2, 132, 199, 0.10);
+}
+
+.dark {
+  /* dark mode — deep-navy institutional terminal */
+  --bg: #060A12;
+  --surface: #0D1526;
+  --surface-2: #0A111E;
+  --hover: #131F36;
+  --line: #1E293B;
+  --line-soft: #16233A;
+  --ink: #F8FAFC;
+  --muted: #94A3B8;
+  --accent: #06B6D4;
+  --accent-2: #3B82F6;
+  --up: #10B981;
+  --down: #F43F5E;
+  --warn: #F59E0B;
+  --stripe: #0F1A2E;
+  --nav-bg: rgba(6, 10, 18, 0.9);
+  --btn-primary-from: #0284C7;
+  --btn-primary-to: #06B6D4;
+  --btn-secondary-bg: #1E293B;
+  --btn-secondary-ink: #E2E8F0;
+  --btn-secondary-line: #334155;
+  --tip-bg: #0D1526;
+  --tip-line: #334155;
+  --grid-line: rgba(148, 163, 184, 0.055);
+  --glow: rgba(6, 182, 212, 0.14);
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* faint terminal grid + top glow, both themes */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: linear-gradient(to bottom, black, transparent 72%);
+}
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(900px 380px at 50% -120px, var(--glow), transparent 70%);
+}
+
+/* ---------- primitives ---------- */
+.surface {
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), 0 1px 2px rgba(2, 6, 23, 0.25);
+}
+.dark .card {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+.card-hover {
+  transition: background-color .16s ease, border-color .16s ease, transform .16s ease;
+}
+.card-hover:hover {
+  background: var(--hover);
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  transform: translateY(-1px);
+}
+
+.muted { color: var(--muted); }
+.accent { color: var(--accent); }
+.rule { border-color: var(--line); }
+
+.knum {
+  font-family: theme("fontFamily.mono");
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.num-gold { color: var(--accent); }
+
+/* ---------- buttons ---------- */
+.btn-primary {
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-[13.5px] font-semibold transition-all;
+  background: linear-gradient(135deg, var(--btn-primary-from), var(--btn-primary-to));
+  color: #FFFFFF;
+  border: 1px solid color-mix(in srgb, var(--btn-primary-to) 70%, #000 8%);
+  box-shadow: 0 1px 0 rgba(255,255,255,.14) inset, 0 8px 22px -12px color-mix(in srgb, var(--accent) 65%, transparent);
+}
+.btn-primary:hover {
+  filter: brightness(1.07);
+  transform: translateY(-1px);
+}
+.btn-primary:active { transform: translateY(0); filter: brightness(.97); }
+.btn-primary:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+
+.btn-secondary,
+.btn-ghost {
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-[13.5px] font-semibold transition-all;
+  background: var(--btn-secondary-bg);
+  color: var(--btn-secondary-ink);
+  border: 1px solid var(--btn-secondary-line);
+}
+.btn-secondary:hover,
+.btn-ghost:hover {
+  background: var(--hover);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--btn-secondary-line));
+  color: var(--ink);
+}
+.btn-secondary:disabled, .btn-ghost:disabled { opacity: .55; cursor: not-allowed; }
+
+/* ---------- chips / pills ---------- */
+.chip {
+  @apply inline-flex items-center rounded-md px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 75%, transparent);
+}
+.chip-active {
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+}
+.chip-live {
+  background: color-mix(in srgb, var(--up) 12%, transparent);
+  color: var(--up);
+  border-color: color-mix(in srgb, var(--up) 35%, var(--line));
+}
+.chip-warn {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 35%, var(--line));
+}
+
+/* ---------- tables ---------- */
+.table-row { border-top: 1px solid var(--line-soft); }
+.table-row:hover { background: var(--hover); }
+th, td { color: var(--ink); }
+.table-head {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+/* ---------- nav ---------- */
+.nav-solid {
+  background: var(--nav-bg);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(16px) saturate(140%);
+}
+
+/* ---------- hero / decorative ---------- */
+.hero-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(900px 340px at 22% -60px, var(--glow), transparent 68%);
+}
+.hero-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: radial-gradient(650px 320px at 30% 0%, black, transparent 72%);
+}
+.hairline-top { box-shadow: inset 0 1px 0 rgba(255,255,255,.05); }
+
+/* ---------- hover-to-decode metric ---------- */
+.metric-tip {
+  text-decoration: underline dotted color-mix(in srgb, var(--accent) 55%, transparent);
+  text-underline-offset: 3px;
+  cursor: help;
+}
+.tip-card {
+  background: var(--tip-bg);
+  border: 1px solid var(--tip-line);
+  box-shadow: 0 22px 50px -16px rgba(2, 6, 23, 0.75);
+  border-radius: 10px;
+  animation: floatIn .16s ease-out both;
+}
+
+/* ---------- scrollbars ---------- */
+* { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--muted) 50%, var(--line)); }
+.scrollbar-none { scrollbar-width: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; }
+
+/* ---------- navbar desk overflow fade ---------- */
+.nav-fade::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; right: 0;
+  width: 40px;
+  pointer-events: none;
+  background: linear-gradient(to right,
+    color-mix(in srgb, var(--bg) 0%, transparent),
+    color-mix(in srgb, var(--bg) 88%, transparent));
+}
+
+/* ---------- misc ---------- */
+::selection { background: var(--accent); color: #041018; }
+.blink-red { animation: blinkred 2.4s ease-in-out infinite; }
+@keyframes blinkred {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+@keyframes floatIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes draw {
+  from { stroke-dashoffset: 2400; }
+  to { stroke-dashoffset: 0; }
+}
+details.dsc summary { cursor: pointer; list-style: none; }
+details.dsc summary::-webkit-details-marker { display: none; }
+
+.skeleton {
+  background: linear-gradient(90deg, var(--surface) 0%, var(--hover) 45%, var(--surface) 100%);
+  background-size: 600px 100%;
+  animation: shimmer 1.6s linear infinite;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.focus-ring:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

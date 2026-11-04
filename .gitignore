@@ -1,0 +1,24 @@
+# python / backend
+__pycache__/
+*.pyc
+.pytest_cache/
+backend/.env
+backend/data/
+backend/*.log
+
+# node / next
+node_modules/
+.next/
+out/
+next-env.d.ts
+tsconfig.tsbuildinfo
+*.log
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# OS
+Thumbs.db
+.DS_Store

@@ -1,0 +1,18 @@
+{
+  "as_of": "2026-11-02",
+  "note": "SGB tranches are real NSE-listed sovereign gold bonds. Each unit is one gram; the 2.5% coupon is paid semi-annually and redemption at maturity is exempt from capital-gains tax for individuals. Secondary-market prices are indicative and sourced from the exchange when available.",
+  "tranches": [
+    {"symbol": "SGBJUN31", "name": "SGB June 2031", "issue_price": 4889, "maturity": "2031-06-15", "coupon": 2.5},
+    {"symbol": "SGBDEC30", "name": "SGB December 2030", "issue_price": 5000, "maturity": "2030-12-15", "coupon": 2.5},
+    {"symbol": "SGBMAR29", "name": "SGB March 2029", "issue_price": 6218, "maturity": "2029-03-15", "coupon": 2.5},
+    {"symbol": "SGBSEP28", "name": "SGB September 2028", "issue_price": 5960, "maturity": "2028-09-15", "coupon": 2.5},
+    {"symbol": "SGBJUN30", "name": "SGB June 2030", "issue_price": 5104, "maturity": "2030-06-15", "coupon": 2.5},
+    {"symbol": "SGBMAR30", "name": "SGB March 2030", "issue_price": 5613, "maturity": "2030-03-15", "coupon": 2.5},
+    {"symbol": "SGBDEC29", "name": "SGB December 2029", "issue_price": 5800, "maturity": "2029-12-15", "coupon": 2.5},
+    {"symbol": "SGBSEP29", "name": "SGB September 2029", "issue_price": 5557, "maturity": "2029-09-15", "coupon": 2.5},
+    {"symbol": "SGBMAR28", "name": "SGB March 2028", "issue_price": 5120, "maturity": "2028-03-15", "coupon": 2.5},
+    {"symbol": "SGBJUN29", "name": "SGB June 2029", "issue_price": 5260, "maturity": "2029-06-15", "coupon": 2.5},
+    {"symbol": "SGBDEC28", "name": "SGB December 2028", "issue_price": 5307, "maturity": "2028-12-15", "coupon": 2.5},
+    {"symbol": "SGBSEP30", "name": "SGB September 2030", "issue_price": 5350, "maturity": "2030-09-15", "coupon": 2.5}
+  ]
+}

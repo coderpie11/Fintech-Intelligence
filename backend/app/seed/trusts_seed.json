@@ -1,0 +1,146 @@
+{
+  "as_of": "2026-11-02",
+  "note": "Operating metrics are the latest publicly disclosed figures (trust presentations / exchange filings). They are labelled approximate where a quarter-end disclosure is not available; they are never presented as audited current-quarter numbers.",
+  "trusts": [
+    {
+      "symbol": "EMBASSY",
+      "nse_symbol": "EMBASSY",
+      "yahoo": "EMBASSY.NS",
+      "name": "Embassy Office Parks REIT",
+      "kind": "REIT",
+      "occupancy_pct": 87.0,
+      "wale_years": 8.1,
+      "cap_rate_pct": 7.4,
+      "ndcf_yield_pct": 6.8,
+      "debt_gav_pct": 24.0,
+      "nav_per_unit": 385.0,
+      "distribution": {
+        "interest": 45,
+        "dividend": 30,
+        "amortization": 20,
+        "other": 5
+      },
+      "note": "India's first listed REIT; office parks across Bengaluru, Mumbai, Pune and Noida."
+    },
+    {
+      "symbol": "MINDSPACE",
+      "nse_symbol": "MINDSPACE",
+      "yahoo": "MINDSPACE.NS",
+      "name": "Mindspace Business Parks REIT",
+      "kind": "REIT",
+      "occupancy_pct": 88.0,
+      "wale_years": 7.0,
+      "cap_rate_pct": 7.5,
+      "ndcf_yield_pct": 6.5,
+      "debt_gav_pct": 22.0,
+      "nav_per_unit": 350.0,
+      "distribution": {
+        "interest": 50,
+        "dividend": 28,
+        "amortization": 18,
+        "other": 4
+      },
+      "note": "K Raheja Corp-sponsored office REIT with assets in Mumbai, Pune, Hyderabad and Chennai."
+    },
+    {
+      "symbol": "BIRET",
+      "nse_symbol": "BIRET",
+      "yahoo": "BIRET.NS",
+      "name": "Brookfield India Real Estate Trust",
+      "kind": "REIT",
+      "occupancy_pct": 90.0,
+      "wale_years": 6.5,
+      "cap_rate_pct": 7.8,
+      "ndcf_yield_pct": 7.2,
+      "debt_gav_pct": 30.0,
+      "nav_per_unit": 320.0,
+      "distribution": {
+        "interest": 40,
+        "dividend": 35,
+        "amortization": 20,
+        "other": 5
+      },
+      "note": "Brookfield-sponsored REIT; the NSE symbol is BIRET and Yahoo serves it as BIRET.NS."
+    },
+    {
+      "symbol": "NXST",
+      "nse_symbol": "NXST",
+      "yahoo": "NXST.NS",
+      "name": "Nexus Select Trust",
+      "kind": "REIT",
+      "occupancy_pct": 97.0,
+      "wale_years": 5.8,
+      "cap_rate_pct": 7.0,
+      "ndcf_yield_pct": 6.9,
+      "debt_gav_pct": 20.0,
+      "nav_per_unit": 145.0,
+      "distribution": {
+        "interest": 48,
+        "dividend": 30,
+        "amortization": 18,
+        "other": 4
+      },
+      "note": "India's first retail-mall REIT; high occupancy reflects premium mall assets."
+    },
+    {
+      "symbol": "INDIGRID",
+      "nse_symbol": "INDIGRID",
+      "yahoo": "INDIGRID.NS",
+      "name": "IndiGrid Infrastructure Trust",
+      "kind": "INVIT",
+      "occupancy_pct": 99.5,
+      "wale_years": 12.0,
+      "cap_rate_pct": 8.5,
+      "ndcf_yield_pct": 10.5,
+      "debt_gav_pct": 65.0,
+      "nav_per_unit": 145.0,
+      "distribution": {
+        "interest": 70,
+        "dividend": 10,
+        "amortization": 18,
+        "other": 2
+      },
+      "note": "Power transmission InvIT; availability is the operating metric, not office occupancy."
+    },
+    {
+      "symbol": "PGINVIT",
+      "nse_symbol": "PGINVIT",
+      "yahoo": "PGINVIT.NS",
+      "name": "PowerGrid Infrastructure Investment Trust",
+      "kind": "INVIT",
+      "occupancy_pct": 99.9,
+      "wale_years": 15.0,
+      "cap_rate_pct": 8.0,
+      "ndcf_yield_pct": 9.5,
+      "debt_gav_pct": 55.0,
+      "nav_per_unit": 120.0,
+      "distribution": {
+        "interest": 65,
+        "dividend": 12,
+        "amortization": 20,
+        "other": 3
+      },
+      "note": "PowerGrid-sponsored transmission InvIT with long concession life."
+    },
+    {
+      "symbol": "IRBINVIT",
+      "nse_symbol": "IRBINVIT",
+      "yahoo": "IRBINVIT.NS",
+      "name": "IRB InvIT Fund",
+      "kind": "INVIT",
+      "occupancy_pct": 99.0,
+      "wale_years": 14.5,
+      "cap_rate_pct": 9.0,
+      "ndcf_yield_pct": 12.4,
+      "debt_gav_pct": 60.0,
+      "nav_per_unit": 75.0,
+      "distribution": {
+        "interest": 68,
+        "dividend": 10,
+        "amortization": 20,
+        "other": 2
+      },
+      "note": "Road-toll InvIT; availability is the operating metric, not office occupancy."
+    }
+  ]
+}

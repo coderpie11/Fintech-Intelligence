@@ -1,0 +1,345 @@
+"""ETFs — curated NSE-listed exchange-traded funds with live quotes, five-year
+price history, returns, premium/discount to published NAV, tracking error,
+impact-cost estimate, liquidity score and an ETF-vs-index-fund calculator."""
+from __future__ import annotations
+
+import datetime as dt
+import math
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.core.db import get_db
+from app.data.adapters import nse_adapter as N
+from app.data.adapters import yfinance_adapter as Y
+from app.models.models import Instrument
+from app.seed.universe import ETF_UNIVERSE
+from app.services import calc
+from app.services.contextual import reported, source_issue
+
+router = APIRouter(prefix="/etfs", tags=["etfs"])
+
+SPECS = {s["symbol"]: s for s in ETF_UNIVERSE}
+
+_ETF_TER = {"NIFTYBEES": 0.04, "SETFNIF50": 0.05, "BANKBEES": 0.19,
+            "ITBEES": 0.22, "JUNIORBEES": 0.20, "GOLDBEES": 0.79,
+            "SILVERBEES": 0.79, "LIQUIDBEES": 0.29, "CPSEETF": 0.07,
+            "ICICIB22": 0.10, "MON100": 0.51, "MOM100": 0.30}
+
+
+def _env(v, what: str = "metric") -> dict:
+    # A non-finite float (NaN/Inf) is not JSON-serialisable and, more
+    # importantly, is not a real answer. Report it as unavailable rather than
+    # letting it reach the client as a broken number.
+    f = _num(v)
+    return reported(f) if f is not None else source_issue(what)
+
+
+def _num(v):
+    try:
+        f = float(v)
+        return f if math.isfinite(f) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _quote_map() -> dict[str, dict]:
+    try:
+        rows = N.nse.etf_list()
+        return {str(r.get("symbol") or "").upper(): r for r in rows}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _history(symbol: str) -> list[dict]:
+    try:
+        return Y.history(f"{symbol}.NS", "5y")
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _clean_navs(rows: list[dict]) -> list[dict]:
+    """Keep only finite closes. The free history feed can carry NaN gaps and a
+    single NaN poisons every return, CAGR and tracking-error built on top."""
+    out = []
+    for h in rows or []:
+        c = _num(h.get("c"))
+        if c is not None:
+            out.append({"date": h.get("date"), "nav": c})
+    return out
+
+
+def _navs(hist: list[dict]) -> list[dict]:
+    return _clean_navs([{"date": h.get("date"), "c": h.get("c")} for h in hist])
+
+
+def _clean_history(hist: list[dict]) -> list[dict]:
+    """Serialisable OHLCV rows with any non-finite value replaced by None."""
+    rows = []
+    for h in hist or []:
+        close = _num(h.get("c"))
+        if close is None:
+            continue
+        rows.append({
+            "date": h.get("date"),
+            "close": close,
+            "open": _num(h.get("o")),
+            "high": _num(h.get("h")),
+            "low": _num(h.get("l")),
+            "volume": _num(h.get("v")),
+        })
+    return rows
+
+
+def _benchmark(db: Session, spec: dict) -> tuple[list[dict], dict]:
+    bench = spec.get("benchmark")
+    if not bench or spec.get("no_bench"):
+        return [], {"symbol": None, "name": None,
+                    "note": "No honest free benchmark series exists for this ETF."}
+    if bench in ("GOLD_INR_PROXY", "SILVER_INR_PROXY"):
+        return [], {"symbol": None, "name": None,
+                    "note": ("No reliable free domestic bullion benchmark exists here. "
+                             "International futures roll between contracts and settle in a "
+                             "different time zone, so a tracking error computed against them "
+                             "would be misleading rather than informative.")}
+    if bench == "NASDAQ100":
+        try:
+            h = Y.history("^NDX", "5y")
+            return (_clean_navs([{"date": x.get("date"), "c": x.get("c")} for x in h]),
+                    {"symbol": "^NDX", "name": "Nasdaq 100", "proxy": False})
+        except Exception:  # noqa: BLE001
+            return [], {"symbol": None, "name": None,
+                        "note": "Nasdaq 100 series was unavailable."}
+    row = (db.query(Instrument).filter_by(kind="INDEX", symbol=bench).one_or_none())
+    if row and row.history:
+        return (_clean_navs([{"date": h.get("date"), "c": h.get("c")} for h in row.history]),
+                {"symbol": bench, "name": bench, "proxy": bool(spec.get("proxy")),
+                 "note": ("This is an approximate benchmark, not the ETF's exact "
+                          "underlying index." if spec.get("proxy") else None)})
+    return [], {"symbol": None, "name": None,
+                "note": f"Benchmark {bench} is not seeded."}
+
+
+def _impact_and_liquidity(q: dict, ltp: float | None) -> dict:
+    high, low = _num(q.get("high")), _num(q.get("low"))
+    qty = _num(q.get("qty")) or 0
+    turnover = _num(q.get("trdVal")) or 0
+    turnover_cr = turnover / 1e7
+    if high and low and ltp:
+        day_range_pct = (high - low) / ltp * 100
+        # Modelled half-spread: half the day's range, reduced for deeper books.
+        impact = day_range_pct / 2 / math.sqrt(max(qty / 1e5, 1))
+        impact = min(max(impact, 0.01), 2.0)
+    else:
+        day_range_pct, impact = None, None
+    score = None
+    if turnover_cr or qty:
+        score = round(min(100, max(0,
+            18 * math.log10(turnover_cr + 1) + 10 * math.log10(qty / 1e5 + 1) + 18)))
+    return {
+        "impact_cost_pct": round(impact, 3) if impact is not None else None,
+        "day_range_pct": round(day_range_pct, 2) if day_range_pct is not None else None,
+        "liquidity_score": score,
+        "turnover_cr": round(turnover_cr, 2) if turnover else None,
+        "volume": int(qty) if qty else None,
+        "note": ("Impact cost is a modelled half-spread proxy from the day's range "
+                 "and traded quantity — not an order-book measurement."),
+    }
+
+
+def _row(symbol: str, spec: dict, q: dict, hist: list[dict]) -> dict:
+    ltp = _num(q.get("ltP")) or (hist[-1]["c"] if hist else None)
+    nav = _num(q.get("nav")) or (hist[-1]["c"] if hist else None)
+    prev = _num(q.get("prevClose")) or (hist[-2]["c"] if len(hist) > 1 else None)
+    chg = ((ltp / prev - 1) * 100 if ltp and prev else
+           _num(q.get("per")))
+    rets = calc.nav_returns(_navs(hist))
+    liq = _impact_and_liquidity(q, ltp)
+    last = hist[-1] if hist else {}
+    window = hist[-252:] if hist else []
+    wkhi = _num(q.get("wkhi")) or (max(h["c"] for h in window) if window else None)
+    wklo = _num(q.get("wklo")) or (min(h["c"] for h in window) if window else None)
+    volume = liq["volume"] or (_num(last.get("v")) or None)
+    turnover_cr = liq["turnover_cr"]
+    impact = liq["impact_cost_pct"]
+    if turnover_cr is None and volume and ltp:
+        turnover_cr = round(volume * ltp / 1e7, 2)
+    if impact is None and ltp and last.get("h") and last.get("l") and volume:
+        day_range_pct = (last["h"] - last["l"]) / ltp * 100
+        impact = round(min(max(day_range_pct / 2 / math.sqrt(max(volume / 1e5, 1)), 0.01), 2.0), 3)
+    score = liq["liquidity_score"]
+    if score is None and turnover_cr:
+        score = round(min(100, max(0, 18 * math.log10(turnover_cr + 1)
+                                  + 10 * math.log10((volume or 0) / 1e5 + 1) + 18)))
+    return {
+        "symbol": symbol, "name": spec["name"], "category": spec["category"],
+        "issuer": spec.get("issuer"), "about": spec.get("about"),
+        "ltp": _env(ltp, "ETF price"),
+        "changepct": _env(round(chg, 2) if chg is not None else None, "day change"),
+        "prev_close": _env(prev, "previous close"),
+        "nav": _env(nav, "published NAV"),
+        "premium_discount_pct": _env(
+            round((ltp - nav) / nav * 100, 2) if ltp and nav else None,
+            "premium/discount to NAV"),
+        "open": _env(_num(q.get("open")) or _num(last.get("o")), "open"),
+        "high": _env(_num(q.get("high")) or _num(last.get("h")), "day high"),
+        "low": _env(_num(q.get("low")) or _num(last.get("l")), "day low"),
+        "week52_high": _env(wkhi, "52-week high"),
+        "week52_low": _env(wklo, "52-week low"),
+        "volume": _env(volume, "volume"),
+        "turnover_cr": _env(turnover_cr, "turnover"),
+        "impact_cost_pct": _env(impact, "impact cost"),
+        "liquidity_score": _env(score, "liquidity score"),
+        "returns": {k: _env(v, f"{k.upper()} return") for k, v in rets.items()},
+        "ter_pct": _env(_ETF_TER.get(symbol), "expense ratio"),
+        "benchmark": spec.get("benchmark"),
+        "has_history": bool(hist),
+        "href": f"/etfs/{symbol}",
+        "quote_source": "NSE /api/etf" if q else "Yahoo Finance daily close",
+    }
+
+
+@router.get("")
+def list_etfs(db: Session = Depends(get_db)):
+    qmap = _quote_map()
+    out = []
+    for spec in ETF_UNIVERSE:
+        sym = spec["symbol"]
+        hist = _history(sym)
+        row = _row(sym, spec, qmap.get(sym) or {}, hist)
+        bench, _meta = _benchmark(db, spec)
+        te = calc.tracking_error(_navs(hist), bench) if bench else None
+        row["tracking_error_pct"] = _env(te, "tracking error")
+        out.append(row)
+    out.sort(key=lambda x: -(x["turnover_cr"]["value"] or 0))
+    return {"count": len(out), "etfs": out,
+            "quote_feed": "NSE /api/etf (live/delayed)" if qmap else "Yahoo Finance fallback",
+            "universe_note": "Curated NSE-listed ETFs. Every quote and NAV is real; "
+                             "impact cost is a clearly labelled model estimate."}
+
+
+@router.get("/{symbol}")
+def etf_detail(symbol: str, db: Session = Depends(get_db)):
+    sym = symbol.upper()
+    spec = SPECS.get(sym)
+    if not spec:
+        raise HTTPException(404, "This ETF is not in the curated NSE universe.")
+    q = _quote_map().get(sym) or {}
+    hist = _history(sym)
+    if not hist and not q:
+        raise HTTPException(503, "Neither the NSE ETF feed nor Yahoo returned data "
+                                 "for this ETF right now.")
+    row = _row(sym, spec, q, hist)
+    bench, bench_meta = _benchmark(db, spec)
+    te = calc.tracking_error(_navs(hist), bench) if bench else None
+    liq = _impact_and_liquidity(q, _num(q.get("ltP")))
+    clean_hist = _clean_history(hist)
+    return {
+        **row,
+        "history": clean_hist,
+        "history_points": len(clean_hist),
+        "history_source": "Yahoo Finance daily candles (5Y)",
+        "tracking_error_pct": _env(te, "tracking error"),
+        "tracking_error_note": (
+            "Annualised standard deviation of daily ETF-price minus benchmark "
+            "returns. Price returns include distributions timing effects; this is "
+            "not a NAV-based tracking difference."
+            if te is not None else bench_meta.get("note")),
+        "benchmark_series": bench_meta,
+        "impact_model": liq,
+        "calculator_defaults": {
+            "amount": 100000, "years": 5,
+            "expected_return_pct": (row["returns"]["5y"]["value"]
+                                    or row["returns"]["3y"]["value"] or 10.0),
+            "index_fund_ter_pct": 0.20,
+            "etf_ter_pct": _ETF_TER.get(sym, 0.20),
+        },
+        "source_notes": [
+            "Price and published NAV come from NSE's official ETF snapshot.",
+            "Yahoo Finance supplies the five-year price history.",
+            "The published NAV is end-of-day, not an intraday iNAV, so the "
+            "premium/discount shown is versus the latest official NAV.",
+            "Tracking error and impact cost are platform calculations, labelled as such.",
+        ],
+        "asof": dt.date.today().isoformat(),
+    }
+
+
+class VsIndexBody(BaseModel):
+    amount: float = 100000
+    years: float = 5
+    expected_return_pct: float | None = None
+    index_fund_ter_pct: float = 0.20
+    etf_ter_pct: float = 0.20
+    brokerage_per_order: float = 20.0
+
+
+@router.get("/{symbol}/intraday")
+def etf_intraday(symbol: str, interval: str = "5m",
+                 db: Session = Depends(get_db)):
+    sym = symbol.upper()
+    spec = SPECS.get(sym)
+    if not spec:
+        raise HTTPException(404, "This ETF is not in the curated NSE universe.")
+    q = _quote_map().get(sym) or {}
+    hist = _history(sym)
+    prev = _num(q.get("prevClose")) or (hist[-2]["c"] if len(hist) > 1 else None)
+    try:
+        data = Y.intraday(f"{sym}.NS", interval=interval, period="5d")
+        if len(data.get("points") or []) >= 2:
+            data["last"] = data["points"][-1]["c"]
+            data["prevClose"] = prev
+            if prev:
+                data["change"] = round(data["last"] - prev, 2)
+                data["changepct"] = round((data["last"] / prev - 1) * 100, 2)
+            data["live_source"] = data.get("source")
+            return data
+    except Exception:  # noqa: BLE001
+        pass
+    if len(hist) >= 2:
+        return {
+            "ticker": f"{sym}.NS", "interval": "1d", "session": hist[-1]["date"],
+            "source": "Yahoo Finance daily candles (intraday feed unavailable)",
+            "points": [{"datetime": h["date"], "date": h["date"], "time": "15:30",
+                        "o": h.get("o"), "h": h.get("h"), "l": h.get("l"),
+                        "c": h["c"], "v": h.get("v")} for h in hist[-60:]],
+            "last": hist[-1]["c"], "prevClose": prev,
+            "change": (round(hist[-1]["c"] - prev, 2) if prev else None),
+            "changepct": (round((hist[-1]["c"] / prev - 1) * 100, 2)
+                          if prev else None),
+            "note": "The intraday feed did not answer; the last 60 daily closes "
+                    "are shown instead of fabricating candles.",
+        }
+    raise HTTPException(503, "No intraday price history available for this ETF yet.")
+
+
+@router.post("/{symbol}/vs-index-fund")
+def vs_index_fund(symbol: str, body: VsIndexBody, db: Session = Depends(get_db)):
+    sym = symbol.upper()
+    if sym not in SPECS:
+        raise HTTPException(404, "This ETF is not in the curated NSE universe.")
+    hist = _history(sym)
+    rets = calc.nav_returns(_navs(hist))
+    expected = (body.expected_return_pct if body.expected_return_pct is not None
+                else (rets.get("5y") or rets.get("3y") or 10.0))
+    etf_net = expected - body.etf_ter_pct - 0.05
+    mf_net = expected - body.index_fund_ter_pct
+    etf_value = body.amount * (1 + etf_net / 100) ** body.years
+    mf_value = body.amount * (1 + mf_net / 100) ** body.years
+    charges = calc.etf_charges(body.amount, etf_value, body.brokerage_per_order)
+    return {
+        "symbol": sym, "name": SPECS[sym]["name"],
+        "expected_gross_return_pct": round(expected, 2),
+        "etf_net_return_pct": round(etf_net, 2),
+        "index_fund_net_return_pct": round(mf_net, 2),
+        "amount": body.amount, "years": body.years,
+        "etf_value_before_charges": round(etf_value, 2),
+        "etf_charges": charges,
+        "etf_value_after_charges": round(etf_value - charges["total"], 2),
+        "index_fund_value": round(mf_value, 2),
+        "advantage_etf": round((etf_value - charges["total"]) - mf_value, 2),
+        "note": ("Same gross index return assumed for both wrappers. The ETF saves "
+                 "the TER gap but pays delivery brokerage, STT, DP and a modelled "
+                 "5 bps impact cost. Direct index funds carry no brokerage."),
+    }
