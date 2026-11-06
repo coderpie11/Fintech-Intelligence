@@ -1571,7 +1571,8 @@ def ask_topic(req: AskTopicRequest, db: Session = Depends(get_db)):
         # generous budget and retry once with an explicit JSON-only nudge.
         try:
             result = complete(PROMPT.format(q=q), system=SYSTEM_PROMPT,
-                              max_tokens=4096, json_mode=True, route="academy")
+                              max_tokens=4096, json_mode=True, route="academy",
+                              timeout_s=8)
             data = extract_json(result.text)
         except Exception:  # noqa: BLE001
             result, data = None, None
@@ -1580,7 +1581,7 @@ def ask_topic(req: AskTopicRequest, db: Session = Depends(get_db)):
                 PROMPT.format(q=q) + "\nReturn ONLY the JSON object, no prose, "
                 "no markdown fences.",
                 system=SYSTEM_PROMPT, max_tokens=6000, json_mode=True,
-                route="academy-retry")
+                route="academy-retry", timeout_s=8)
             data = extract_json(result.text)
         if not data:
             raise ValueError("model did not return JSON")

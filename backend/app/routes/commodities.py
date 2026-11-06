@@ -239,67 +239,149 @@ def sgb_scanner(db: Session = Depends(get_db)):
 
 
 class WealthBody(BaseModel):
+    """One request covers both metals and both input modes.
+
+    ``amount_inr`` wins when supplied (invest-by-rupee mode); otherwise
+    ``grams`` is the metal weight the buyer already owns.
+    """
+    metal: str = "gold"
+    amount_inr: float | None = None
     grams: float = 10.0
     years: float = 5.0
-    gold_cagr_pct: float = 8.0
-    making_charge_pct: float = 12.0
-    gold_gst_pct: float = 3.0
-    silver_gst_pct: float = 5.0
-    etf_ter_pct: float = 0.79
+    cagr_pct: float = 8.0
+    gold_cagr_pct: float | None = None  # legacy clients
+    making_charge_pct: float | None = None
+    gst_pct: float | None = None
+    gold_gst_pct: float | None = None
+    silver_gst_pct: float | None = None
+    etf_ter_pct: float | None = None
     etf_impact_pct: float = 0.15
+    storage_pct: float | None = None
     sgb_coupon_pct: float = 2.5
     tax_slab_pct: float = 30.0
 
 
+def _vehicle_row(vehicle: str, units: float, outlay: float, fees: float,
+                 end_value: float, yrs: float) -> dict:
+    net = end_value - outlay
+    cagr_pct = (round(((end_value / outlay) ** (1 / yrs) - 1) * 100, 2)
+                if outlay > 0 and end_value > 0 else None)
+    return {"vehicle": vehicle, "units": round(units, 4),
+            "outlay": round(outlay, 2), "fees": round(max(fees, 0), 2),
+            "end_value": round(end_value, 2), "net_gain": round(net, 2),
+            "effective_cagr_pct": cagr_pct}
+
+
 @router.post("/calc/wealth")
 def wealth(body: WealthBody, db: Session = Depends(get_db)):
-    gold = db.query(Instrument).filter_by(kind="COMMODITY", symbol="GOLD").one_or_none()
-    spot = ((gold.meta or {}).get("inr_gram_24k") if gold else None)
+    metal = "silver" if str(body.metal or "gold").lower().startswith("silver") else "gold"
+    rec = (db.query(Instrument)
+             .filter_by(kind="COMMODITY", symbol=metal.upper()).one_or_none())
+    meta = (rec.meta or {}) if rec else {}
+    spot = meta.get("inr_gram_silver") if metal == "silver" else meta.get("inr_gram_24k")
     if not spot:
-        raise HTTPException(503, "Gold spot is not seeded yet — refresh commodities.")
-    grams = max(body.grams, 0.1)
+        raise HTTPException(503, f"{metal.title()} spot is not seeded yet — refresh commodities.")
+
     yrs = max(body.years, 0.1)
-    end_gold = spot * (1 + body.gold_cagr_pct / 100) ** yrs
+    cagr_pct = body.cagr_pct
+    if body.gold_cagr_pct is not None and body.cagr_pct == 8.0:
+        cagr_pct = body.gold_cagr_pct
+    end_spot = spot * (1 + cagr_pct / 100) ** yrs
 
-    # Physical: pay making charges + GST on the full purchase, no annual fee.
-    physical_outlay = spot * grams * (1 + body.making_charge_pct / 100) \
-        * (1 + body.gold_gst_pct / 100)
-    physical_value = end_gold * grams
+    making = body.making_charge_pct
+    if making is None:
+        making = 12.0 if metal == "gold" else 8.0
+    gst = body.gst_pct or body.gold_gst_pct or body.silver_gst_pct
+    if gst is None:
+        gst = 3.0
+    etf_ter = body.etf_ter_pct
+    if etf_ter is None:
+        etf_ter = 0.79 if metal == "gold" else 0.40
+    storage = body.storage_pct if body.storage_pct is not None else (0.0 if metal == "gold" else 0.5)
 
-    # ETF: no making charge, small GST on brokerage, annual TER + impact.
-    etf_outlay = spot * grams * (1 + body.gold_gst_pct / 100)
-    etf_gross = end_gold * grams
-    etf_fees = etf_outlay * (body.etf_ter_pct / 100 * yrs + body.etf_impact_pct / 100)
-    etf_value = etf_gross - etf_fees
+    amount_mode = body.amount_inr is not None and body.amount_inr > 0
+    amount = float(body.amount_inr or 0.0)
+    raw_grams = amount / spot if amount_mode else max(body.grams, 0.001)
+    headline_amount = amount if amount_mode else spot * raw_grams
+    physical_load = (1 + making / 100) * (1 + gst / 100) - 1
 
-    # SGB: issue at spot, 2.5% semi-annual coupon, redemption tax-free.
-    sgb_outlay = spot * grams
-    coupon_total = sgb_outlay * body.sgb_coupon_pct / 100 * yrs
-    coupon_tax = coupon_total * body.tax_slab_pct / 100
-    sgb_value = end_gold * grams + coupon_total - coupon_tax
+    rows: list[dict] = []
+    if metal == "gold":
+        # 24K physical: making charges + GST, no annual fee.
+        units24 = (calc.metal_units(amount, spot, physical_load * 100)
+                   if amount_mode else raw_grams)
+        outlay24 = amount if amount_mode else spot * units24 * (1 + physical_load)
+        rows.append(_vehicle_row(
+            "Physical 24K gold", units24, outlay24,
+            outlay24 - units24 * spot, units24 * end_spot, yrs))
 
-    rows = [
-        {"vehicle": "Physical gold", "outlay": round(physical_outlay, 2),
-         "fees": round(physical_outlay - spot * grams, 2),
-         "end_value": round(physical_value, 2),
-         "net_gain": round(physical_value - physical_outlay, 2),
-         "effective_cagr_pct": round(((physical_value / physical_outlay) ** (1 / yrs) - 1) * 100, 2)},
-        {"vehicle": "Gold ETF", "outlay": round(etf_outlay, 2),
-         "fees": round(etf_fees, 2), "end_value": round(etf_value, 2),
-         "net_gain": round(etf_value - etf_outlay, 2),
-         "effective_cagr_pct": round(((etf_value / etf_outlay) ** (1 / yrs) - 1) * 100, 2)},
-        {"vehicle": "SGB (2.5% coupon)", "outlay": round(sgb_outlay, 2),
-         "fees": round(coupon_tax, 2), "end_value": round(sgb_value, 2),
-         "net_gain": round(sgb_value - sgb_outlay, 2),
-         "effective_cagr_pct": round(((sgb_value / sgb_outlay) ** (1 / yrs) - 1) * 100, 2)},
-    ]
+        # 22K physical: same load, 91.6% pure metal per gram.
+        spot22, end22 = spot * 0.916, end_spot * 0.916
+        units22 = (calc.metal_units(amount, spot22, physical_load * 100)
+                   if amount_mode else raw_grams)
+        outlay22 = amount if amount_mode else spot22 * units22 * (1 + physical_load)
+        rows.append(_vehicle_row(
+            "Physical 22K gold", units22, outlay22,
+            outlay22 - units22 * spot22, units22 * end22, yrs))
+
+        # Gold ETF (GOLDBEES): no making charge, annual TER + impact.
+        units_etf = (calc.metal_units(amount, spot) if amount_mode else raw_grams)
+        outlay_etf = amount if amount_mode else spot * units_etf
+        etf_fees = outlay_etf * (etf_ter / 100 * yrs + body.etf_impact_pct / 100)
+        rows.append(_vehicle_row("Gold ETF (GOLDBEES)", units_etf, outlay_etf,
+                                 etf_fees, units_etf * end_spot - etf_fees, yrs))
+
+        # SGB: issue at spot, 2.5% coupon (taxed at slab), tax-free redemption.
+        units_sgb = (calc.metal_units(amount, spot) if amount_mode else raw_grams)
+        outlay_sgb = amount if amount_mode else spot * units_sgb
+        coupon_total = outlay_sgb * body.sgb_coupon_pct / 100 * yrs
+        coupon_tax = coupon_total * body.tax_slab_pct / 100
+        rows.append(_vehicle_row("Sovereign Gold Bond (SGB)", units_sgb, outlay_sgb,
+                                 coupon_tax,
+                                 units_sgb * end_spot + coupon_total - coupon_tax, yrs))
+        note = ("Physical 24K/22K pays making charges and 3% GST upfront. GOLDBEES "
+                "charges about 0.79% TER and no making charge. SGB pays a taxable "
+                "2.5% coupon and redeems tax-free at maturity. Same expected gold "
+                "CAGR for every vehicle — a model, not tax advice.")
+    else:
+        # Physical silver: making/wastage + GST + annual storage.
+        units_ph = (calc.metal_units(amount, spot, physical_load * 100)
+                    if amount_mode else raw_grams)
+        outlay_ph = amount if amount_mode else spot * units_ph * (1 + physical_load)
+        storage_cost = outlay_ph * storage / 100 * yrs
+        rows.append(_vehicle_row(
+            "Physical silver (bars/utensils)", units_ph, outlay_ph,
+            outlay_ph - units_ph * spot + storage_cost,
+            units_ph * end_spot - storage_cost, yrs))
+
+        # Silver ETF (SILVERBEES / HDFCSILVER): ~0.40% TER, demat safety.
+        units_etf = (calc.metal_units(amount, spot) if amount_mode else raw_grams)
+        outlay_etf = amount if amount_mode else spot * units_etf
+        etf_fees = outlay_etf * (etf_ter / 100 * yrs + body.etf_impact_pct / 100)
+        rows.append(_vehicle_row("Silver ETF (SILVERBEES / HDFCSILVER)",
+                                 units_etf, outlay_etf, etf_fees,
+                                 units_etf * end_spot - etf_fees, yrs))
+
+        # Silver mutual-fund FoF: slightly higher TER, no demat needed.
+        units_fof = (calc.metal_units(amount, spot) if amount_mode else raw_grams)
+        outlay_fof = amount if amount_mode else spot * units_fof
+        fof_ter = max(etf_ter, 0.50)
+        fof_fees = outlay_fof * (fof_ter / 100 * yrs + body.etf_impact_pct / 100)
+        rows.append(_vehicle_row("Silver Fund of Fund (FoF)", units_fof, outlay_fof,
+                                 fof_fees, units_fof * end_spot - fof_fees, yrs))
+        note = ("Physical silver adds making/wastage charges, 3% GST and storage. "
+                "SILVERBEES/HDFCSILVER charge about 0.40% TER with demat safety. "
+                "A silver FoF charges slightly more but needs no demat account. "
+                "Same expected silver CAGR for every vehicle — a model, not advice.")
+
     best = max(rows, key=lambda r: r["end_value"])
-    return {"rows": rows, "best": best["vehicle"], "spot_per_gram": round(spot, 2),
-            "end_gold_per_gram": round(end_gold, 2), "years": yrs, "grams": grams,
-            "note": ("Physical gold pays making charges and GST upfront; ETFs pay TER "
-                     "and impact cost; SGBs pay a taxable 2.5% coupon and tax-free "
-                     "redemption. Assumes the same gold CAGR for all three. A model, "
-                     "not tax advice.")}
+    return {
+        "metal": metal, "rows": rows, "best": best["vehicle"],
+        "spot_per_gram": round(spot, 2), "end_price_per_gram": round(end_spot, 2),
+        "years": yrs, "grams": round(raw_grams, 4),
+        "amount_inr": round(headline_amount, 2), "input_mode": "amount" if amount_mode else "weight",
+        "price_unit": "₹ per gram", "note": note,
+    }
 
 
 # ---------------------------------------------------------------- intraday

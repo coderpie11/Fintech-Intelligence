@@ -74,40 +74,79 @@ function envNum(e?: Env): number | null {
   return e && e.value != null ? e.value : null;
 }
 
-function PctCell({ env, strong = false }: { env?: Env; strong?: boolean }) {
+function PctCell({ env, strong = false, active = false }: { env?: Env; strong?: boolean; active?: boolean }) {
   const v = envNum(env);
   return (
-    <span className={`knum text-[11.5px] ${strong ? "font-bold" : ""} ${v == null ? "muted" : v >= 0 ? "text-up" : "text-down"}`}>
+    <span className={`knum text-[11.5px] ${strong || active ? "font-bold" : ""} ${v == null ? "muted" : v >= 0 ? "text-up" : "text-down"}`}>
       {v != null ? pct(v) : "—"}
     </span>
   );
+}
+
+const ETF_TYPES = [
+  "All ETFs", "Silver ETFs", "Gold ETFs", "Nifty 50 & Broad Index",
+  "Sensex ETFs", "Midcap & Next 50", "Banking & Financial",
+  "IT & Sectoral", "International / Nasdaq", "PSU & CPSE", "Liquid & Debt",
+];
+
+const PERIODS = [
+  { key: "1m", label: "1 Month (1M)" },
+  { key: "3m", label: "3 Months (3M)" },
+  { key: "6m", label: "6 Months (6M)" },
+  { key: "1y", label: "1 Year (1Y)" },
+  { key: "3y", label: "3 Years (3Y CAGR)" },
+  { key: "5y", label: "5 Years (5Y CAGR)" },
+] as const;
+
+type PeriodKey = (typeof PERIODS)[number]["key"];
+
+function etfBucket(e: EtfRow): string {
+  const cat = (e.category || "").toLowerCase();
+  const hay = `${cat} ${(e.name || "").toLowerCase()}`;
+  if (cat === "silver" || /silver/.test(hay)) return "Silver ETFs";
+  if (cat === "gold" || /gold/.test(hay)) return "Gold ETFs";
+  if (cat === "sensex" || /sensex/.test(hay)) return "Sensex ETFs";
+  if (cat === "mid & next 50" || /midcap|mid cap|next 50/.test(hay)) return "Midcap & Next 50";
+  if (cat === "banking" || /bank|financial/.test(hay)) return "Banking & Financial";
+  if (cat === "international" || /nasdaq|international|hang seng|fang/.test(hay)) return "International / Nasdaq";
+  if (cat === "psu" || /psu|cpse|bharat/.test(hay)) return "PSU & CPSE";
+  if (cat === "liquid & debt" || /liquid|debt|gilt|sdl/.test(hay)) return "Liquid & Debt";
+  if (cat === "it & sectoral" || /sectoral|pharma|auto|infra|consum|information technology|\bit\b/.test(hay)) return "IT & Sectoral";
+  return "Nifty 50 & Broad Index";
 }
 
 export function EtfList() {
   const [data, setData] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
-  const [cat, setCat] = useState("");
+  const [type, setType] = useState("All ETFs");
+  const [period, setPeriod] = useState<PeriodKey>("1y");
+  const [order, setOrder] = useState<"desc" | "asc">("desc");
 
   useEffect(() => {
     setErr(null);
     getJSON("/etfs").then(setData).catch((e) => setErr(String(e.message || e)));
   }, []);
 
-  const categories = useMemo(
-    () => Array.from(new Set((data?.etfs || []).map((e: EtfRow) => e.category).filter(Boolean))).sort() as string[],
-    [data],
-  );
-
   const rows = useMemo(() => {
     const list: EtfRow[] = data?.etfs || [];
-    return list.filter((e) => {
-      if (cat && e.category !== cat) return false;
-      if (!q.trim()) return true;
-      const needle = q.trim().toLowerCase();
-      return e.symbol.toLowerCase().includes(needle) || e.name.toLowerCase().includes(needle);
+    const needle = q.trim().toLowerCase();
+    const filtered = list.filter((e) => {
+      if (type !== "All ETFs" && etfBucket(e) !== type) return false;
+      if (!needle) return true;
+      return e.symbol.toLowerCase().includes(needle)
+        || e.name.toLowerCase().includes(needle)
+        || (e.category || "").toLowerCase().includes(needle);
     });
-  }, [data, q, cat]);
+    return [...filtered].sort((a, b) => {
+      const av = envNum(a.returns?.[period]);
+      const bv = envNum(b.returns?.[period]);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return order === "desc" ? bv - av : av - bv;
+    });
+  }, [data, q, type, period, order]);
 
   const stats = useMemo(() => {
     const list: EtfRow[] = data?.etfs || [];
@@ -165,15 +204,32 @@ export function EtfList() {
           <div className="flex flex-wrap items-center gap-2 mb-3">
             <div className="surface rounded-lg px-3 py-1.5 flex-1 min-w-[220px] max-w-md">
               <input value={q} onChange={(e) => setQ(e.target.value)}
-                     placeholder="Search ETF or symbol…"
+                     placeholder="Search ETF, symbol or category…"
                      className="w-full bg-transparent text-[12.5px] outline-none"
                      style={{ color: "var(--ink)" }} />
             </div>
-            <select value={cat} onChange={(e) => setCat(e.target.value)}
-                    className="surface rounded-lg px-3 py-1.5 text-[12px]" style={{ color: "var(--ink)" }}>
-              <option value="">All categories</option>
-              {categories.map((c) => <option key={c}>{c}</option>)}
-            </select>
+            <label className="flex items-center gap-1.5">
+              <span className="muted text-[9.5px] font-bold uppercase tracking-[0.12em]">Type</span>
+              <select value={type} onChange={(e) => setType(e.target.value)}
+                      className="surface rounded-lg px-2.5 py-1.5 text-[12px]" style={{ color: "var(--ink)" }}>
+                {ETF_TYPES.map((t) => <option key={t}>{t}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-1.5">
+              <span className="muted text-[9.5px] font-bold uppercase tracking-[0.12em]">Return period</span>
+              <select value={period} onChange={(e) => setPeriod(e.target.value as PeriodKey)}
+                      className="surface rounded-lg px-2.5 py-1.5 text-[12px]" style={{ color: "var(--ink)" }}>
+                {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-1.5">
+              <span className="muted text-[9.5px] font-bold uppercase tracking-[0.12em]">Sort by return</span>
+              <select value={order} onChange={(e) => setOrder(e.target.value as "desc" | "asc")}
+                      className="surface rounded-lg px-2.5 py-1.5 text-[12px]" style={{ color: "var(--ink)" }}>
+                <option value="desc">Highest Return First (Max → Min ↓)</option>
+                <option value="asc">Lowest Return First (Min → Max ↑)</option>
+              </select>
+            </label>
             <span className="chip !text-[9.5px]">{data.quote_feed}</span>
             <span className="muted text-[11px]">{rows.length} shown</span>
           </div>
@@ -193,12 +249,12 @@ export function EtfList() {
                     <th className="table-head text-right px-2.5 py-2.5">
                       <MetricTip label="Prem / Disc" tip={TIPS.premium}>Prem / Disc</MetricTip>
                     </th>
-                    <th className="table-head text-right px-2.5 py-2.5">1M</th>
-                    <th className="table-head text-right px-2.5 py-2.5">3M</th>
-                    <th className="table-head text-right px-2.5 py-2.5">6M</th>
-                    <th className="table-head text-right px-2.5 py-2.5">1Y</th>
-                    <th className="table-head text-right px-2.5 py-2.5">3Y</th>
-                    <th className="table-head text-right px-2.5 py-2.5">5Y</th>
+                    {PERIODS.map((p) => (
+                      <th key={p.key} className="table-head text-right px-2.5 py-2.5"
+                          style={period === p.key ? { color: "var(--accent)" } : undefined}>
+                        {p.key.toUpperCase()}{p.key === "3y" || p.key === "5y" ? " CAGR" : ""}
+                      </th>
+                    ))}
                     <th className="table-head text-right px-2.5 py-2.5">Turnover</th>
                     <th className="table-head text-right px-2.5 py-2.5">
                       <MetricTip label="Impact" tip={TIPS.impact}>Impact</MetricTip>
@@ -225,12 +281,14 @@ export function EtfList() {
                       <td className={`px-2.5 py-2.5 text-right knum text-[11.5px] font-semibold ${(envNum(e.premium_discount_pct) || 0) >= 0 ? "text-up" : "text-down"}`}>
                         {envNum(e.premium_discount_pct) != null ? pct(envNum(e.premium_discount_pct)) : "—"}
                       </td>
-                      <td className="px-2.5 py-2.5 text-right"><PctCell env={e.returns?.["1m"]} /></td>
-                      <td className="px-2.5 py-2.5 text-right"><PctCell env={e.returns?.["3m"]} /></td>
-                      <td className="px-2.5 py-2.5 text-right"><PctCell env={e.returns?.["6m"]} /></td>
-                      <td className="px-2.5 py-2.5 text-right"><PctCell env={e.returns?.["1y"]} /></td>
-                      <td className="px-2.5 py-2.5 text-right"><PctCell env={e.returns?.["3y"]} strong /></td>
-                      <td className="px-2.5 py-2.5 text-right"><PctCell env={e.returns?.["5y"]} strong /></td>
+                      {PERIODS.map((p) => (
+                        <td key={p.key} className="px-2.5 py-2.5 text-right"
+                            style={period === p.key ? { background: "color-mix(in srgb, var(--accent) 7%, transparent)" } : undefined}>
+                          <PctCell env={e.returns?.[p.key]}
+                                   strong={p.key === "3y" || p.key === "5y"}
+                                   active={period === p.key} />
+                        </td>
+                      ))}
                       <td className="px-2.5 py-2.5 text-right knum text-[11px]">
                         {envNum(e.turnover_cr) != null ? `₹${Number(envNum(e.turnover_cr)).toLocaleString("en-IN")} Cr` : "—"}
                       </td>

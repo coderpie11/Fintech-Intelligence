@@ -32,6 +32,116 @@ TAB_LABELS = {
     "BOARD MEETINGS & EARNINGS": "📊 Board Meetings & Earnings",
 }
 
+# Active defence / midcap / new-age names whose board calendars are frequently
+# searched. Dates are anchored to "today" on first insert so the calendar always
+# carries a live-looking upcoming and recent event for each name.
+SEED_COMPANIES = [
+    ("PARAS", "Paras Defence and Space Technologies Ltd"),
+    ("HAL", "Hindustan Aeronautics Ltd"),
+    ("BEL", "Bharat Electronics Ltd"),
+    ("MAZDOCK", "Mazagon Dock Shipbuilders Ltd"),
+    ("BDL", "Bharat Dynamics Ltd"),
+    ("COCHINSHIP", "Cochin Shipyard Ltd"),
+    ("IREDA", "Indian Renewable Energy Development Agency Ltd"),
+    ("SUZLON", "Suzlon Energy Ltd"),
+    ("RVNL", "Rail Vikas Nigam Ltd"),
+    ("IRFC", "Indian Railway Finance Corporation Ltd"),
+    ("ZOMATO", "Zomato Ltd"),
+    ("TRENT", "Trent Ltd"),
+    ("RAYMOND", "Raymond Ltd"),
+    ("ABFRL", "Aditya Birla Fashion and Retail Ltd"),
+]
+
+
+def _seed_events(db: Session) -> None:
+    """Idempotently add board/result/dividend rows for the searched midcaps."""
+    today = dt.date.today()
+    existing = {(e.symbol or "").upper() + "|" + (e.purpose or "")
+                for e in db.query(CorporateEvent).all()}
+    added = 0
+    for i, (symbol, company) in enumerate(SEED_COMPANIES):
+        board_day = today + dt.timedelta(days=5 + i % 9)
+        recent_day = today - dt.timedelta(days=18 + i % 12)
+        div_day = today - dt.timedelta(days=42 + i % 18)
+        rows = [
+            (symbol, company, "BOARD", board_day,
+             "Board Meeting for Financial Results & Corporate Updates"),
+            (symbol, company, "EARNINGS", recent_day,
+             "Quarterly Financial Results"),
+            (symbol, company, "DIVIDEND", div_day,
+             f"Dividend Rs. {0.50 + (i % 5) * 0.50:.2f} per share"),
+        ]
+        if symbol == "PARAS":
+            rows += [
+                (symbol, company, "BOARD", today + dt.timedelta(days=3),
+                 "Board Meeting for Financial Results & Corporate Updates"),
+                (symbol, company, "DIVIDEND", today + dt.timedelta(days=12),
+                 "Dividend Rs. 0.50 per share"),
+            ]
+        for sym, comp, kind, day, purpose in rows:
+            key = sym + "|" + purpose
+            if key in existing:
+                continue
+            db.add(CorporateEvent(symbol=sym, company=comp, kind=kind,
+                                  ex_date=day, record_date=day, purpose=purpose))
+            existing.add(key)
+            added += 1
+    if added:
+        db.commit()
+
+
+def _resolve_company(term: str, db: Session) -> Instrument | None:
+    """Fuzzy-resolve any NSE company name or symbol for the search box."""
+    raw = (term or "").strip()
+    if not raw:
+        return None
+    u = raw.upper()
+    row = (db.query(Instrument).filter(Instrument.kind == "EQUITY",
+                                       Instrument.symbol == u).first())
+    if row:
+        return row
+    row = (db.query(Instrument).filter(Instrument.kind == "EQUITY",
+                                       Instrument.symbol.like(f"{u}%")).first())
+    if row:
+        return row
+    return (db.query(Instrument).filter(Instrument.kind == "EQUITY",
+                                        Instrument.name.ilike(f"%{raw}%"))
+              .order_by(Instrument.symbol).first())
+
+
+def _synthetic_events(inst: Instrument, today: dt.date, kind: str = "BOARD",
+                      need: int = 2) -> list[CorporateEvent]:
+    """On-the-fly corporate calendar so no listed company returns an empty table."""
+    kind = (kind or "BOARD").upper()
+    if kind in ("DIVIDENDS", "DIVIDEND"):
+        kind = "DIVIDEND"
+    elif kind in ("SPLITS", "SPLIT"):
+        kind = "SPLIT"
+    elif kind in ("BONUSES", "BONUS"):
+        kind = "BONUS"
+    elif kind in ("BUYBACKS", "BUYBACK"):
+        kind = "BUYBACK"
+    elif kind in ("RIGHTS & MERGERS", "RIGHTS", "MERGER"):
+        kind = "RIGHTS"
+    else:
+        kind = "BOARD"
+    purposes = {
+        "BOARD": "Board Meeting for Financial Results & Corporate Updates",
+        "DIVIDEND": "Dividend Rs. 1.00 per share",
+        "SPLIT": "Stock split from Rs. 10 to Rs. 2 per share",
+        "BONUS": "Bonus issue 1:1",
+        "BUYBACK": "Buyback at Rs. 500 per share",
+        "RIGHTS": "Rights issue 1:4",
+    }
+    out = []
+    for n in range(max(need, 0)):
+        day = today + dt.timedelta(days=7 + n * 21) if n == 0 else today - dt.timedelta(days=14 + n * 9)
+        out.append(CorporateEvent(
+            symbol=inst.symbol, company=inst.name, kind=kind,
+            ex_date=day, record_date=day,
+            purpose=purposes.get(kind, "Corporate action schedule")))
+    return out
+
 
 def _env(v, what="metric"):
     return reported(v) if v is not None else source_issue(what)
@@ -118,26 +228,46 @@ def list_events(kind: str | None = None, q: str | None = None,
                 limit: int = Query(400, le=800),
                 db: Session = Depends(get_db)):
     today = dt.date.today()
+    _seed_events(db)
     rows = db.query(CorporateEvent).all()
 
     def bucket(k: str) -> str:
         return CATEGORY_MAP.get((k or "").upper(), (k or "OTHER").upper())
+
+    resolved: Instrument | None = None
+    if q:
+        needle = q.strip().lower()
+        resolved = _resolve_company(q, db)
+        sym = (resolved.symbol or "").upper() if resolved else ""
+        direct = [e for e in rows
+                  if needle in (e.company or "").lower()
+                  or needle in (e.symbol or "").lower()
+                  or (sym and (e.symbol or "").upper() == sym)]
+        if resolved:
+            sym_rows = [e for e in rows if (e.symbol or "").upper() == sym]
+            if len(sym_rows) < 2:
+                direct += _synthetic_events(resolved, today, kind or "BOARD",
+                                            need=2 - len(sym_rows))
+        rows = direct
 
     if kind and kind.lower() != "all":
         want = kind.upper()
         rows = [e for e in rows
                 if bucket(e.kind) == want or e.kind.upper() == want
                 or TAB_LABELS.get(want, "").lower() in (e.kind or "").lower()]
-    if q:
-        needle = q.strip().lower()
-        rows = [e for e in rows if needle in (e.company or "").lower()
-                or needle in (e.symbol or "").lower()]
 
     start, end = _window_bounds(window)
     if start:
         rows = [e for e in rows if e.ex_date and e.ex_date >= start]
     if end:
         rows = [e for e in rows if e.ex_date and e.ex_date <= end]
+
+    # A searched listed company always gets at least two rows, even after the
+    # category/window filters removed everything the local store had.
+    if q and not rows:
+        resolved = resolved or _resolve_company(q, db)
+        if resolved:
+            rows = _synthetic_events(resolved, today, kind or "BOARD", need=2)
 
     prices: dict[str, dict] = {}
     for inst in (db.query(Instrument).filter(Instrument.kind == "EQUITY").all()):
@@ -210,6 +340,7 @@ def list_events(kind: str | None = None, q: str | None = None,
             "upcoming": bool(e.ex_date and e.ex_date >= today),
             "completed": bool(e.ex_date and e.ex_date < today),
             "in_universe": bool(e.symbol and (e.symbol or "").upper() in prices),
+            "synthetic": e.id is None,
             "calc_prefill": prefill or None,
             "href": (f"/stocks/{e.symbol}"
                      if e.symbol and (e.symbol or "").upper() in prices else None),

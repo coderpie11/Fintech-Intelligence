@@ -13,7 +13,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Markets",
     items: [
       { label: "Indices", href: "/indices", key: "indices", desc: "Benchmarks, sectorals and India VIX" },
-      { label: "Equities Screener", href: "/stocks", key: "stocks", desc: "2,400+ NSE companies, fundamentals and DCF" },
+      { label: "Equities Desk", href: "/stocks", key: "stocks", desc: "2,400+ NSE companies, fundamentals and DCF" },
       { label: "IPOs", href: "/ipos", key: "ipos", desc: "Mainboard and SME issues" },
       { label: "Market Pulse 4 PM", href: "/market-pulse", key: "pulse", desc: "End-of-day breadth and flows" },
       { label: "Corporate Events", href: "/events", key: "events", desc: "Dividends, splits and board meetings" },

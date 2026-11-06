@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import SearchBar from "./SearchBar";
 import ThemeToggle from "./ThemeToggle";
 import MarketClock from "./MarketClock";
+import BrandMark from "./BrandMark";
 import { NAV_GROUPS, NAV_DIRECT } from "@/lib/nav";
 
 function isActive(path: string, href: string) {
@@ -36,20 +37,11 @@ export default function Navbar() {
       <div className="mx-auto max-w-[1600px] px-3 sm:px-5">
         <div className="flex h-[62px] items-center gap-2.5">
           {/* brand — plain wordmark, no dropdown on the site name */}
-          <Link href="/" className="shrink-0 group flex items-center gap-2.5" aria-label="Bharat Fintech Intelligence home">
-            <span
-              className="grid h-8 w-8 place-items-center rounded-lg shrink-0"
-              style={{ background: "linear-gradient(135deg,#0284C7,#06B6D4)", boxShadow: "0 6px 18px -8px rgba(6,182,212,.7)" }}
-            >
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round">
-                <path d="M4 17.5 8.5 12l3.5 3 3.2-5.2L20 13" />
-                <path d="M4 20h16" opacity=".55" />
-                <circle cx="20" cy="13" r="1.6" fill="#fff" stroke="none" />
-              </svg>
-            </span>
+          <Link href="/" className="shrink-0 group flex items-center gap-2.5" aria-label="Fintech Intelligence home">
+            <BrandMark size={32} />
             <span className="leading-none">
               <span className="block text-[14.5px] font-black tracking-tight">
-                Bharat Fintech <span className="accent">Intelligence</span>
+                Fintech <span className="accent">Intelligence</span>
               </span>
               <span className="hidden sm:block muted text-[8.5px] font-semibold tracking-[0.2em] uppercase mt-1">
                 Institutional Market Terminal

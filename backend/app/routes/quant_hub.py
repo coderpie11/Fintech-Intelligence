@@ -18,7 +18,7 @@ def health(probe: bool = Query(False)):
     """Everything the hub's transparency strip needs, in one request."""
     llm = LLM.health(probe=probe)
     return {
-        "platform": "Bharat Fintech Intelligence",
+        "platform": "Fintech Intelligence",
         "workspaces": [
             {"id": "rangecast", "name": "RangeCast AI",
              "fact": "80% probabilistic bands + F&O OI walls + delivery Z"},
@@ -59,9 +59,32 @@ def streetpulse_workspace(limit: int = Query(12, ge=4, le=30),
 
 
 # -------------------------------------------------------------------- X-Ray
+_XRAY_CACHE: dict = {"at": 0.0, "payload": None}
+
+
 @router.get("/xray")
 def xray_workspace(db: Session = Depends(get_db)):
-    return xray.build(db)
+    """Serve the post-market X-Ray from a short-lived in-process cache.
+
+    The page must answer in well under 100 ms once warm; the first request
+    rebuilds the chain and stores it for two minutes. If a rebuild fails, the
+    last good payload is returned instead of a 500.
+    """
+    import time as _t
+
+    now = _t.time()
+    cached = _XRAY_CACHE.get("payload")
+    if cached is not None and now - float(_XRAY_CACHE.get("at") or 0) < 120:
+        return cached
+    try:
+        payload = xray.build(db)
+    except Exception:  # noqa: BLE001
+        if cached is not None:
+            return cached
+        raise
+    _XRAY_CACHE["at"] = now
+    _XRAY_CACHE["payload"] = payload
+    return payload
 
 
 # ---------------------------------------------------------------- Ask Dalal
@@ -115,6 +138,12 @@ def ask_dalal(body: AskBody, db: Session = Depends(get_db)):
                 "data": askdalal.answer_documents(body.question, db,
                                                   symbol=body.symbol,
                                                   prefer_llm=body.prefer_llm)}
+    # A company-specific natural-language question gets a five-section research
+    # note built from stored fundamentals and shareholding — never a SQL dump.
+    note = askdalal.research_note(body.question, db, symbol=body.symbol,
+                                  prefer_llm=body.prefer_llm)
+    if note.get("available"):
+        return {"intent": "research", "data": note}
     return {"intent": "screener",
             "data": askdalal.ask_screener(body.question, db,
                                           prefer_llm=body.prefer_llm)}
@@ -184,3 +213,4 @@ def disclaimer():
                    "and clearly label any LLM-generated text. None of this is "
                    "investment advice."),
     }
+

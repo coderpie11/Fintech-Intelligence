@@ -27,6 +27,33 @@ from app.data.adapters import nse_adapter as N
 from app.models.models import DeliveryStat, Instrument
 from app.services.ai_engine import sentiment as S
 
+CATALYSTS = [
+    {
+        "theme": "🎆 Diwali, Festive & Wedding Apparel / Retail Boom",
+        "symbols": ["RAYMOND", "ABFRL", "TRENT", "TITAN", "MANYAVAR"],
+        "driver": "Festive footfall, wedding wardrobe and jewellery restocking drive Q3 revenue surge.",
+        "tone": "up",
+    },
+    {
+        "theme": "🛡️ Indigenous Defense & Space Order Book",
+        "symbols": ["PARAS", "HAL", "BEL", "MAZDOCK", "BDL"],
+        "driver": "Make-in-India defence electronics, optics and naval pipeline order execution.",
+        "tone": "accent",
+    },
+    {
+        "theme": "⚡ Power, Renewables & Infra Capex",
+        "symbols": ["NTPC", "TATAPOWER", "LT", "IREDA"],
+        "driver": "Peak power demand, grid expansion and renewable capacity addition.",
+        "tone": "warn",
+    },
+    {
+        "theme": "🌾 Rural Consumption & Monsoon Recovery",
+        "symbols": ["ITC", "HINDUNILVR", "DABUR", "M&M"],
+        "driver": "Rural demand pickup and monsoon-led agri cash-flow recovery.",
+        "tone": "up",
+    },
+]
+
 DIVERGENCE_NOTE = (
     "Divergence flags compare independent measurements — news tone, delivery "
     "participation and valuation — and report where they disagree. A flag is a "
@@ -251,6 +278,7 @@ def build(db: Session, limit: int = 12) -> dict:
         "counts": {q: sum(1 for r in rows if r["quadrant"] == q)
                    for q in order},
         "headlines": headline_out,
+        "catalysts": CATALYSTS,
         "divergence_note": DIVERGENCE_NOTE,
         "disclaimer": ("Descriptive analysis of public flows, delivery data and "
                        "news tone. Not investment advice."),

@@ -53,7 +53,7 @@ export default function StocksPage() {
   return (
     <div className="mx-auto max-w-[1600px] px-4 sm:px-6">
       <PageHeader
-        eyebrow="Equities · screener"
+        eyebrow="Equities · NSE universe"
         title="Equities Desk"
         sub="Every tracked listed company with live price, valuation and sector context. Click a company for the full deep-dive: 5-year history, all ratios, DCF, peers and the F&O tab."
         right={<RefreshButton stage="equities" />}

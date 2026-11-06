@@ -368,7 +368,7 @@ def search_schemes(db: Session, term: str, limit: int = 12) -> list[dict]:
 @router.get("")
 def list_funds(q: str | None = None, category: str | None = None,
                amc: str | None = None, kind: str = "mf",
-               sort: str = "aum", limit: int = Query(60, le=200),
+               sort: str = "aum", limit: int = Query(500, le=500),
                page: int = 1, db: Session = Depends(get_db)):
     query = db.query(FundScheme)
     if kind == "mf":
@@ -381,26 +381,43 @@ def list_funds(q: str | None = None, category: str | None = None,
         query = query.filter(FundScheme.amc.ilike(f"%{amc}%"))
 
     # A search must reach every stored scheme, including the ones whose NAV
-    # history has not been enriched yet. The default browse view still hides
-    # dead/pending schemes so the table never shows an empty row.
+    # history has not been enriched yet. The default browse view shows every
+    # active scheme with at least three months of NAV history, capped at 500.
     q_mode = bool(q and q.strip())
     latest_map = F.latest_nav_map() if q_mode else {}
     if q_mode:
         from app.services import fuzzy
 
-        rows = fuzzy.rank(q.strip(), query.all(),
-                          lambda r: f"{r.code} {r.name} {r.amc or ''}",
-                          limit=100000, floor=0.55)
+        # Rank the cached (code, name, amc) index first so a keystroke never
+        # instantiates 38,000 ORM objects. Only the best codes are fetched.
+        ranked = fuzzy.rank(q.strip(), _scheme_index(db),
+                            lambda r: f"{r[0]} {r[1]} {r[2]}",
+                            limit=800, floor=0.55)
+        codes = [r[0] for r in ranked]
+        by_code: dict[str, FundScheme] = {}
+        for i in range(0, len(codes), 800):
+            for rec in (db.query(FundScheme)
+                          .filter(FundScheme.code.in_(codes[i:i + 800])).all()):
+                by_code[rec.code] = rec
+        rows = [by_code[c] for c in codes if c in by_code]
+        if kind == "mf":
+            rows = [r for r in rows if not r.is_etf]
+        elif kind == "etf":
+            rows = [r for r in rows if r.is_etf]
+        if category:
+            rows = [r for r in rows if r.category == category]
+        if amc:
+            rows = [r for r in rows if amc.lower() in (r.amc or "").lower()]
         # Relevance order is meaningful; do not re-sort it below.
     else:
         today = dt.date.today()
         rows = []
-        for r in query.all():
+        for r in query.filter(FundScheme.navs.isnot(None)).all():
             navs = r.navs or []
-            if len(navs) < 1000:
+            if len(navs) < 60:
                 continue
             try:
-                if (today - dt.date.fromisoformat(navs[-1]["date"])).days > 12:
+                if (today - dt.date.fromisoformat(navs[-1]["date"])).days > 15:
                     continue
             except Exception:  # noqa: BLE001
                 continue

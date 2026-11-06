@@ -137,7 +137,8 @@ def _log_attempt(route: str, provider: str, model: str, tier: int, ok: bool,
 
 
 def _gemini_call(model: str, prompt: str, system: str | None,
-                 max_tokens: int, json_mode: bool) -> str:
+                 max_tokens: int, json_mode: bool,
+                 timeout_s: float = 45) -> str:
     body: dict = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.2},
@@ -147,7 +148,7 @@ def _gemini_call(model: str, prompt: str, system: str | None,
     if json_mode:
         body["generationConfig"]["responseMimeType"] = "application/json"
     r = httpx.post(GEMINI_URL.format(model=model, key=GEMINI_API_KEY),
-                   json=body, timeout=45)
+                   json=body, timeout=timeout_s)
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:160]}")
     d = r.json()
@@ -166,11 +167,12 @@ def _gemini_call(model: str, prompt: str, system: str | None,
 
 def _openai_compat_call(base: str, key: str, model: str, prompt: str,
                         system: str | None, max_tokens: int,
-                        json_mode: bool, provider: str) -> str:
+                        json_mode: bool, provider: str,
+                        timeout_s: float = 60) -> str:
     headers = {"Authorization": f"Bearer {key}"}
     if provider == "openrouter":
         headers["HTTP-Referer"] = "http://localhost:3000"
-        headers["X-Title"] = "Bharat Fintech Intelligence"
+        headers["X-Title"] = "Fintech Intelligence"
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -179,7 +181,7 @@ def _openai_compat_call(base: str, key: str, model: str, prompt: str,
                   "max_tokens": max_tokens, "temperature": 0.2}
     if json_mode:
         body["response_format"] = {"type": "json_object"}
-    r = httpx.post(base, headers=headers, json=body, timeout=60)
+    r = httpx.post(base, headers=headers, json=body, timeout=timeout_s)
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:160]}")
     d = r.json()
@@ -198,7 +200,8 @@ def _openai_compat_call(base: str, key: str, model: str, prompt: str,
 
 
 def complete(prompt: str, system: str | None = None, max_tokens: int = 900,
-             json_mode: bool = False, route: str = "generic") -> LlmResult:
+             json_mode: bool = False, route: str = "generic",
+             timeout_s: float | None = None) -> LlmResult:
     """Run the tiered chain. Raises only when every tier is unavailable."""
     attempts: list[dict] = []
     started = time.time()
@@ -215,11 +218,13 @@ def complete(prompt: str, system: str | None = None, max_tokens: int = 900,
             t0 = time.time()
             try:
                 if spec.name == "gemini":
-                    text = _gemini_call(model, prompt, system, max_tokens, json_mode)
+                    text = _gemini_call(model, prompt, system, max_tokens, json_mode,
+                                        timeout_s=timeout_s or 45)
                 else:
                     base = GROQ_URL if spec.name == "groq" else OPENROUTER_URL
                     text = _openai_compat_call(base, spec.key, model, prompt, system,
-                                               max_tokens, json_mode, spec.name)
+                                               max_tokens, json_mode, spec.name,
+                                               timeout_s=timeout_s or 60)
                 ms = int((time.time() - t0) * 1000)
                 attempts.append({"provider": spec.name, "model": model,
                                  "ok": True, "latency_ms": ms})
@@ -325,3 +330,4 @@ def health(probe: bool = False) -> dict:
 
 def configured() -> bool:
     return any(p.key for p in PROVIDERS)
+

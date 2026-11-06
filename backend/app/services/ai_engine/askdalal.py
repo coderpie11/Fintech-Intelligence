@@ -22,6 +22,7 @@ Nothing here recommends a security.
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import date
 
@@ -31,6 +32,7 @@ from sqlalchemy.orm import Session
 from app.core.db import engine
 from app.data.adapters import nse_adapter as N
 from app.models.models import CorporateEvent, Instrument
+from app.services import fuzzy
 from app.services.ai_engine import llmFailoverRouter as LLM
 from app.services.ai_engine import rag
 
@@ -377,6 +379,328 @@ def _llm_sql(question: str, db: Session) -> dict:
             "error": err, "attempts": out.attempts}
 
 
+# ---------------------------------------------------------------------------
+# Institutional research note (company-specific questions)
+# ---------------------------------------------------------------------------
+
+_RESEARCH_SECTIONS = [
+    ("🏢", "Business Moat & Overview"),
+    ("🏦", "Smart Money & Institutional Flow"),
+    ("📊", "Valuation & Financial Health"),
+    ("🚀", "Future Outlook & Catalysts"),
+    ("⚖️", "Verdict"),
+]
+
+_RESEARCH_SYSTEM = (
+    "You are an institutional equity research analyst covering Indian listed "
+    "companies. Write ONLY from the supplied JSON facts; never invent a number "
+    "or an event. Return strict JSON with exactly this shape: "
+    "{\"sections\":[{\"title\":\"...\",\"body\":\"...\"}, ...]} and exactly "
+    "these five titles in order: 'Business Moat & Overview', 'Smart Money & "
+    "Institutional Flow', 'Valuation & Financial Health', 'Future Outlook & "
+    "Catalysts', 'Verdict'. Each body is 70-130 words of clean professional "
+    "prose. Do not output SQL, tables, provider names, or a buy/sell order. "
+    "The Verdict must compare the bull case with key risks and close with a "
+    "neutral, non-advisory statement."
+)
+
+_STOP_WORDS = {
+    "share", "shares", "stock", "stocks", "price", "prices", "expectations",
+    "outlook", "month", "months", "company", "companies", "limited", "ltd",
+    "what", "are", "the", "for", "and", "with", "about", "show", "me", "buy",
+    "sell", "target", "future", "near", "term", "should", "invest",
+    "investment", "view", "bank", "banks", "sector", "sectors", "roe", "roce",
+    "pe", "pb", "eps", "debt", "equity", "sales", "profit", "profits",
+    "margin", "margins", "dividend", "yield", "above", "below", "over",
+    "under", "more", "less", "than", "between", "tell", "give", "list",
+}
+
+
+def _finite(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def resolve_company(db: Session, question: str,
+                    symbol: str | None = None) -> Instrument | None:
+    """Resolve a ticker, company name or misspelling to one tracked equity."""
+    if symbol:
+        up = symbol.strip().upper()
+        row = (db.query(Instrument).filter_by(kind="EQUITY", symbol=up)
+                 .one_or_none())
+        if row:
+            return row
+    text = (question or "").strip()
+    if not text:
+        return None
+
+    # Exact ticker tokens first ("TCS", "RELIANCE", "PARAS").
+    for token in re.findall(r"\b[A-Za-z][A-Za-z0-9&.-]{1,19}\b", text):
+        if token.lower() in _STOP_WORDS:
+            continue
+        row = (db.query(Instrument)
+                 .filter_by(kind="EQUITY", symbol=token.upper())
+                 .one_or_none())
+        if row:
+            return row
+
+    candidates = db.query(Instrument).filter(Instrument.kind == "EQUITY").all()
+
+    def pick(term: str, floor: float) -> Instrument | None:
+        ranked = fuzzy.rank(term, candidates,
+                            lambda r: f"{r.symbol} {r.name}",
+                            limit=1, floor=floor)
+        return ranked[0] if ranked else None
+
+    # Capitalised phrases such as "Paras Defence" or "Reliance Industries".
+    for phrase in re.findall(
+            r"\b(?:[A-Z][A-Za-z&.-]+(?:\s+[A-Z][A-Za-z&.-]+){0,3})\b", text):
+        if phrase.lower() in _STOP_WORDS or len(phrase) < 3:
+            continue
+        found = pick(phrase, 0.72)
+        if found:
+            return found
+
+    found = pick(text, 0.78)
+    if found:
+        return found
+    for token in sorted(fuzzy.tokens(text), key=len, reverse=True)[:5]:
+        if len(token) < 5 or token in _STOP_WORDS:
+            continue
+        found = pick(token, 0.82)
+        if found:
+            return found
+    return None
+
+
+def _latest_series(series: dict, name: str) -> float | None:
+    for v in reversed(series.get(name) or []):
+        f = _finite(v)
+        if f is not None:
+            return f
+    return None
+
+
+def _prior_series(series: dict, name: str, back: int = 4) -> float | None:
+    vals = [v for v in (series.get(name) or []) if _finite(v) is not None]
+    if len(vals) > back:
+        return _finite(vals[-1 - back])
+    return None
+
+
+def _research_facts(db: Session, row: Instrument) -> dict:
+    meta = row.meta or {}
+    fund = meta.get("fundamentals") or {}
+    val = fund.get("valuation") or {}
+    prof = fund.get("profitability") or {}
+    solv = fund.get("solvency") or {}
+    growth = fund.get("growth") or {}
+    shp = meta.get("shareholding") or {}
+    series = shp.get("series") or {}
+    periods = shp.get("periods") or []
+    sector = row.sector or meta.get("sector")
+
+    market_cap = _finite(meta.get("marketCap") or fund.get("market_cap"))
+    sector_pe = _finite(meta.get("sectorPe"))
+    if sector_pe is None and sector:
+        peers = (db.query(Instrument)
+                   .filter(Instrument.kind == "EQUITY",
+                           Instrument.sector == sector).all())
+        pes = [_finite((p.meta or {}).get("pe")) for p in peers]
+        pes = [p for p in pes if p is not None and 0 < p < 300]
+        if pes:
+            sector_pe = round(sum(pes) / len(pes), 2)
+
+    def holding(name: str) -> dict:
+        return {"latest": _latest_series(series, name),
+                "four_quarters_ago": _prior_series(series, name)}
+
+    return {
+        "symbol": row.symbol,
+        "name": row.name,
+        "sector": sector,
+        "industry": row.industry or meta.get("industry"),
+        "asof": meta.get("live_asof") or fund.get("asof"),
+        "quote": {
+            "price": _finite(meta.get("lastPrice")),
+            "change_pct": _finite(meta.get("changepct")),
+            "year_low": _finite(meta.get("yearLow")),
+            "year_high": _finite(meta.get("yearHigh")),
+            "market_cap_inr": market_cap,
+            "market_cap_cr": round(market_cap / 1e7, 2) if market_cap else None,
+            "delivery_pct": _finite(meta.get("deliveryPct")),
+        },
+        "valuation": {
+            "pe": _finite(meta.get("pe") or val.get("pe")),
+            "sector_pe": sector_pe,
+            "pb": _finite(val.get("pb")),
+            "dividend_yield_pct": _finite(val.get("dividend_yield")),
+            "eps": _finite(val.get("eps")),
+            "book_value_per_share": _finite(val.get("book_value_per_share")),
+        },
+        "profitability": {
+            "roe_pct": _finite(prof.get("roe")),
+            "roce_pct": _finite(prof.get("roce")),
+            "roa_pct": _finite(prof.get("roa")),
+            "operating_margin_pct": _finite(prof.get("operating_margin")),
+            "net_margin_pct": _finite(prof.get("net_margin")),
+        },
+        "solvency": {
+            "debt_equity": _finite(solv.get("debt_equity")),
+            "interest_coverage": _finite(solv.get("interest_coverage")),
+            "current_ratio": _finite(solv.get("current_ratio")),
+        },
+        "growth": {k: _finite(v) for k, v in growth.items()
+                   if _finite(v) is not None},
+        "shareholding": {
+            "period": periods[-1] if periods else None,
+            "promoters": holding("Promoters"),
+            "fii": holding("FIIs"),
+            "dii": holding("DIIs"),
+            "government": holding("Government"),
+            "public": holding("Public"),
+        },
+    }
+
+
+def _fmt(v, suffix: str = "") -> str:
+    if v is None:
+        return "not disclosed"
+    if isinstance(v, float):
+        return f"{v:,.2f}{suffix}"
+    return f"{v:,}{suffix}"
+
+
+def _deterministic_sections(f: dict) -> list[dict]:
+    q = f["quote"]
+    v = f["valuation"]
+    p = f["profitability"]
+    s = f["solvency"]
+    sh = f["shareholding"]
+    g = f["growth"]
+    promoter = sh["promoters"]["latest"]
+    fii = sh["fii"]["latest"]
+    dii = sh["dii"]["latest"]
+    public = sh["public"]["latest"]
+    pe = v["pe"]
+    spe = v["sector_pe"]
+    pe_line = (f"trades at {_fmt(pe, '×')} earnings"
+               + (f" versus a sector average of {_fmt(spe, '×')}" if spe else ""))
+    growth_line = ", ".join(
+        f"{k.replace('_', ' ')} {_fmt(val, '%')}" for k, val in list(g.items())[:4]
+    ) or "growth detail is not disclosed"
+
+    return [
+        {"icon": _RESEARCH_SECTIONS[0][0], "title": _RESEARCH_SECTIONS[0][1],
+         "body": (f"{f['name']} ({f['symbol']}) operates in {f['sector'] or 'its sector'}"
+                  f"{' / ' + f['industry'] if f['industry'] else ''}. The stock is "
+                  f"quoted at ₹{_fmt(q['price'])} with a 52-week range of "
+                  f"₹{_fmt(q['year_low'])}–₹{_fmt(q['year_high'])} and a market "
+                  f"capitalisation of ₹{_fmt(q['market_cap_cr'])} crore. Reported "
+                  f"operating margin is {_fmt(p['operating_margin_pct'], '%')} and "
+                  f"net margin {_fmt(p['net_margin_pct'], '%')}, which frame how much "
+                  f"pricing power the business currently demonstrates. The moat read "
+                  f"below is based on these disclosed economics and the company's "
+                  f"sector position, not on an unverified narrative.")},
+        {"icon": _RESEARCH_SECTIONS[1][0], "title": _RESEARCH_SECTIONS[1][1],
+         "body": (f"Promoters hold {_fmt(promoter, '%')}, FIIs {_fmt(fii, '%')}, "
+                  f"DIIs {_fmt(dii, '%')} and the public {_fmt(public, '%')} of the "
+                  f"company as per the latest disclosed shareholding period"
+                  f"{' (' + str(sh['period']) + ')' if sh['period'] else ''}. "
+                  f"Domestic institutions are the steady structural bid in Indian "
+                  f"mid-caps; foreign ownership is more sentiment-sensitive. A rising "
+                  f"promoter stake alongside stable DII ownership is supportive, while "
+                  f"falling promoter or FII holdings warrant a closer look. Delivery "
+                  f"participation of {_fmt(q['delivery_pct'], '%')} indicates how much "
+                  f"of recent turnover settled as delivery rather than intraday churn.")},
+        {"icon": _RESEARCH_SECTIONS[2][0], "title": _RESEARCH_SECTIONS[2][1],
+         "body": (f"The stock {pe_line}. Price-to-book is {_fmt(v['pb'], '×')}, ROE "
+                  f"{_fmt(p['roe_pct'], '%')} and ROCE {_fmt(p['roce_pct'], '%')}. "
+                  f"Debt-to-equity is {_fmt(s['debt_equity'], '×')} with interest "
+                  f"coverage of {_fmt(s['interest_coverage'], '×')}, so the balance "
+                  f"sheet is {'comfortable' if (s['debt_equity'] or 0) < 1 else 'leveraged'}"
+                  f" on the disclosed numbers. Dividend yield is "
+                  f"{_fmt(v['dividend_yield_pct'], '%')}. Valuation should be read "
+                  f"against the company's own growth and return profile rather than "
+                  f"in isolation.")},
+        {"icon": _RESEARCH_SECTIONS[3][0], "title": _RESEARCH_SECTIONS[3][1],
+         "body": (f"Disclosed growth reads: {growth_line}. The operating margin of "
+                  f"{_fmt(p['operating_margin_pct'], '%')} is the key execution lever: "
+                  f"order accretion, product mix and cost absorption drive it. Near-term "
+                  f"catalysts to monitor are quarterly order intake, execution against "
+                  f"the stated order book, working-capital discipline and sector demand. "
+                  f"Because this note uses only stored public data, it does not assume "
+                  f"any unannounced order, capex or policy event.")},
+        {"icon": _RESEARCH_SECTIONS[4][0], "title": _RESEARCH_SECTIONS[4][1],
+         "body": (f"Bull case: a differentiated franchise in {f['sector'] or 'its market'}, "
+                  f"return on equity of {_fmt(p['roe_pct'], '%')}, and a balance sheet "
+                  f"with debt-to-equity of {_fmt(s['debt_equity'], '×')} can support "
+                  f"earnings compounding if execution holds. Key risks: valuation at "
+                  f"{_fmt(pe, '×')} leaves little room for a growth miss, customer or "
+                  f"order concentration can swing revenue, and input-cost or working-"
+                  f"capital pressure can compress margins. This is a factual research "
+                  f"summary, not investment advice; verify every figure against the "
+                  f"company's latest filings before acting.")},
+    ]
+
+
+def research_note(question: str, db: Session, symbol: str | None = None,
+                  prefer_llm: bool = True) -> dict:
+    """Build a five-section institutional note for a company-specific question."""
+    row = resolve_company(db, question, symbol)
+    if row is None:
+        return {"available": False, "reason": "no-company-identified"}
+
+    facts = _research_facts(db, row)
+    sections: list[dict] | None = None
+    llm_meta: dict = {"used": False}
+
+    if prefer_llm and LLM.configured():
+        try:
+            out = LLM.complete(
+                "Company facts JSON:\n"
+                + json.dumps(facts, ensure_ascii=False, default=str)
+                + f"\n\nReader question: {question}\n\nReturn the JSON object.",
+                system=_RESEARCH_SYSTEM, max_tokens=1600, json_mode=True,
+                route="ask-dalal-research", timeout_s=30)
+            parsed = LLM.extract_json(out.text) or {}
+            got = parsed.get("sections")
+            if isinstance(got, list) and len(got) >= 5:
+                sections = []
+                for i, item in enumerate(got[:5]):
+                    icon, title = _RESEARCH_SECTIONS[i]
+                    body = str((item or {}).get("body") or "").strip()
+                    if body:
+                        sections.append({"icon": icon, "title": title, "body": body})
+                if len(sections) < 5:
+                    sections = None
+                else:
+                    llm_meta = {"used": True}
+        except Exception as e:  # noqa: BLE001
+            llm_meta = {"used": False, "error": str(e)[:200]}
+
+    if not sections:
+        sections = _deterministic_sections(facts)
+
+    return {
+        "available": True,
+        "symbol": row.symbol,
+        "name": row.name,
+        "sector": facts["sector"],
+        "asof": facts["asof"],
+        "question": question,
+        "sections": sections,
+        "facts": facts,
+        "llm": llm_meta,
+        "note": ("A factual research summary computed from stored public data. "
+                 "It is not investment advice or a price target."),
+        "generated_at": date.today().isoformat(),
+    }
+
+
 def ask_screener(question: str, db: Session, prefer_llm: bool = True) -> dict:
     ensure_views()
     llm = {"used": False}
@@ -394,17 +718,17 @@ def ask_screener(question: str, db: Session, prefer_llm: bool = True) -> dict:
         result = run_sql(sql)
         mode = "deterministic"
         llm["fallback_explanation"] = why
+    cols = result.get("columns", [])
+    rows = result.get("rows", [])
+    matches = [dict(zip(cols, r)) for r in rows]
     return {
         "question": question,
         "mode": mode,
-        "sql": result.get("sql"),
-        "columns": result.get("columns", []),
-        "rows": result.get("rows", []),
-        "row_count": result.get("row_count", 0),
+        "matches": matches,
+        "row_count": result.get("row_count", len(matches)),
         "error": result.get("error"),
-        "llm": llm,
-        "guard": ("Single SELECT only · view allow-list · query-only connection · "
-                  "hard row cap 200"),
+        "note": ("A factual screen over platform data. It is not investment "
+                 "advice or a buy/sell list."),
     }
 
 

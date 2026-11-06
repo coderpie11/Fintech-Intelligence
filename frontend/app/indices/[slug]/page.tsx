@@ -159,6 +159,13 @@ export default function IndexDetailPage() {
   const [intraday, setIntraday] = useState<any>(null);
   const [scrub, setScrub] = useState<ChartHoverPoint | null>(null);
 
+  const openFno = () => {
+    setTab("fno");
+    setTimeout(() => {
+      document.getElementById("fno-section-anchor")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 60);
+  };
+
   useEffect(() => {
     let live = true;
     setD(null);
@@ -279,7 +286,7 @@ export default function IndexDetailPage() {
             <WatchlistButton symbol={d.fno_symbol || d.symbol || d.slug} kind="INDEX" href={`/indices/${d.slug}`} />
             <RefreshButton stage="indices" />
             {d.fno_tab_available && (
-              <button onClick={() => setTab("fno")} className="btn-primary !py-2 !text-[12.5px]">
+              <button onClick={openFno} className="btn-primary !py-2 !text-[12.5px]">
                 {isVix ? "Open VIX calculator" : "Open F&O tab"}
               </button>
             )}
@@ -420,7 +427,7 @@ export default function IndexDetailPage() {
       </div>
 
       <div className="mb-5">
-        <Tabs tabs={tabs} active={tab} onChange={setTab} />
+        <Tabs tabs={tabs} active={tab} onChange={(k) => (k === "fno" ? openFno() : setTab(k))} />
       </div>
 
       {/* ---------------- OVERVIEW ---------------- */}
@@ -567,7 +574,7 @@ export default function IndexDetailPage() {
                 month if volatility stays at that level. Rising VIX means option buyers are
                 paying more for protection; falling VIX means complacency.
               </p>
-              <button onClick={() => setTab("fno")} className="btn-secondary mt-4 !py-2 !text-[12.5px]">
+              <button onClick={openFno} className="btn-secondary mt-4 !py-2 !text-[12.5px]">
                 Open the VIX swing calculator →
               </button>
             </section>
@@ -702,6 +709,7 @@ export default function IndexDetailPage() {
 
       {/* ---------------- F&O ---------------- */}
       {tab === "fno" && d.fno_tab_available && d.fno_symbol && (
+        <div id="fno-section-anchor" className="scroll-mt-24">
         <section>
           <SectionTitle
             title={`${d.name} derivatives`}
@@ -715,6 +723,7 @@ export default function IndexDetailPage() {
           />
           <FnoTab underlying={d.fno_symbol} />
         </section>
+        </div>
       )}
 
       {/* ---------------- SOURCES ---------------- */}
@@ -749,7 +758,7 @@ export default function IndexDetailPage() {
             </p>
             <p className="muted text-[12px] leading-relaxed">
               {d.data_note?.value ||
-                "Prices are exchange EOD or delayed. Nothing on this page is a buy or sell recommendation."}
+                "Prices are indicative and may update with a lag. Nothing on this page is a buy or sell recommendation."}
             </p>
           </div>
         </section>

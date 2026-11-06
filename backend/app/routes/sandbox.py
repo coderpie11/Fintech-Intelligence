@@ -34,9 +34,27 @@ router = APIRouter(tags=["sandbox"])
 STARTING_CASH = 1_000_000  # ₹10,00,000 virtual, zero-KYC (per spec)
 
 FNO_INDEX_KEYS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY",
-                  "NIFTYNXT50", "SENSEX"}
-LOT_SIZES = {"NIFTY": 75, "BANKNIFTY": 35, "FINNIFTY": 65,
-             "MIDCPNIFTY": 120, "NIFTYNXT50": 25, "SENSEX": 20}
+                  "NIFTYNXT50", "SENSEX", "NIFTYIT"}
+LOT_SIZES = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65,
+             "MIDCPNIFTY": 120, "NIFTYNXT50": 25, "SENSEX": 20,
+             "NIFTYIT": 25}
+
+# Human names, NSE index symbols and F&O keys all resolve to one canonical name.
+INDEX_ALIASES = {
+    "NIFTY": "NIFTY 50", "NIFTY50": "NIFTY 50", "NIFTY 50": "NIFTY 50",
+    "NIFTY BANK": "NIFTY BANK", "BANK NIFTY": "NIFTY BANK",
+    "BANKNIFTY": "NIFTY BANK", "NIFTYBANK": "NIFTY BANK",
+    "SENSEX": "SENSEX", "BSE SENSEX": "SENSEX", "BSESENSEX": "SENSEX",
+    "NIFTY IT": "NIFTY IT", "NIFTYIT": "NIFTY IT",
+    "NIFTY NEXT 50": "NIFTY NEXT 50", "NIFTYNXT50": "NIFTY NEXT 50",
+    "NIFTY FIN SERVICE": "NIFTY FIN SERVICE", "FINNIFTY": "NIFTY FIN SERVICE",
+    "NIFTY MIDCAP 100": "NIFTY MIDCAP 100", "MIDCPNIFTY": "NIFTY MIDCAP 100",
+}
+FNO_KEY_BY_NAME = {
+    "NIFTY 50": "NIFTY", "NIFTY BANK": "BANKNIFTY",
+    "NIFTY FIN SERVICE": "FINNIFTY", "NIFTY MIDCAP 100": "MIDCPNIFTY",
+    "NIFTY NEXT 50": "NIFTYNXT50", "SENSEX": "SENSEX", "NIFTY IT": "NIFTYIT",
+}
 
 
 class OrderIn(BaseModel):
@@ -61,51 +79,106 @@ class WatchIn(BaseModel):
     href: str | None = Field(default=None, max_length=120)
 
 
+class QuoteIn(BaseModel):
+    symbol: str = Field(min_length=1, max_length=120)
+    side: str = Field(default="BUY", pattern="^(BUY|SELL)$")
+    asset_class: str = Field(default="EQUITY", pattern="^(EQUITY|DERIVATIVE)$")
+    quantity: float | None = Field(default=None, gt=0)
+    underlying: str | None = Field(default=None, max_length=120)
+    option_type: str | None = Field(default=None, pattern="^(CE|PE|FUT)$")
+    strike: float | None = Field(default=None, gt=0)
+    expiry: str | None = Field(default=None, max_length=20)
+    lots: float | None = Field(default=None, gt=0)
+    lot_size: int | None = Field(default=None, gt=0)
+    price: float | None = Field(default=None, gt=0)
+
+
 # ---------------------------------------------------------------------------
 # Pricing helpers
 # ---------------------------------------------------------------------------
 
-def _equity_row(symbol: str, db: Session) -> Instrument | None:
+def _instrument_mark(row: Instrument) -> float | None:
+    m = row.meta or {}
+    v = m.get("lastPrice") if row.kind != "INDEX" else m.get("last")
+    if v is None:
+        v = m.get("lastPrice") or m.get("last")
+    if v is None and row.history:
+        v = row.history[-1].get("c")
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_instrument(term: str, db: Session,
+                        kinds: tuple[str, ...] = ("EQUITY", "ETF", "INDEX")
+                        ) -> Instrument | None:
+    """Resolve a symbol, company name or index alias to one instrument row."""
+    raw = (term or "").strip()
+    if not raw:
+        return None
+    u = raw.upper()
+    alias = INDEX_ALIASES.get(u)
+    if alias:
+        row = (db.query(Instrument).filter_by(kind="INDEX", symbol=alias)
+                 .one_or_none())
+        if row:
+            return row
+    row = (db.query(Instrument)
+             .filter(Instrument.kind.in_(kinds), Instrument.symbol == u)
+             .first())
+    if row:
+        return row
+    # Exact-ish symbol prefix, then company-name contains (Paras Defence, etc.)
+    row = (db.query(Instrument)
+             .filter(Instrument.kind.in_(kinds), Instrument.symbol.like(f"{u}%"))
+             .order_by(Instrument.symbol).first())
+    if row:
+        return row
     return (db.query(Instrument)
-              .filter_by(kind="EQUITY", symbol=symbol.upper()).one_or_none())
+              .filter(Instrument.kind.in_(kinds), Instrument.name.ilike(f"%{raw}%"))
+              .order_by(Instrument.symbol).first())
+
+
+def _equity_row(symbol: str, db: Session) -> Instrument | None:
+    row = _resolve_instrument(symbol, db, ("EQUITY", "ETF"))
+    if row:
+        return row
+    return (db.query(Instrument)
+              .filter(Instrument.kind.in_(("EQUITY", "ETF")),
+                      Instrument.symbol == symbol.upper()).first())
 
 
 def _index_row(symbol: str, db: Session) -> Instrument | None:
-    from app.routes.fno import FNO_INDICES
-    nse_name = FNO_INDICES.get(symbol.upper(), symbol.upper())
-    return (db.query(Instrument)
-              .filter_by(kind="INDEX", symbol=nse_name).one_or_none())
+    u = symbol.upper()
+    nse_name = INDEX_ALIASES.get(u, u)
+    row = (db.query(Instrument).filter_by(kind="INDEX", symbol=nse_name)
+             .one_or_none())
+    if row:
+        return row
+    return (db.query(Instrument).filter(Instrument.kind == "INDEX")
+              .filter(Instrument.symbol.like(f"%{nse_name}%")).first())
+
+
+def _fno_key(underlying: str) -> str:
+    u = (underlying or "").upper()
+    canonical = INDEX_ALIASES.get(u, u)
+    return FNO_KEY_BY_NAME.get(canonical, u)
 
 
 def _equity_mark(symbol: str, db: Session) -> float | None:
-    row = _equity_row(symbol, db)
-    return (row.meta or {}).get("lastPrice") if row else None
+    row = _resolve_instrument(symbol, db, ("EQUITY", "ETF", "INDEX"))
+    return _instrument_mark(row) if row else None
 
 
 def _underlying_spot(underlying: str, db: Session) -> float | None:
-    u = underlying.upper()
-    if u in FNO_INDEX_KEYS:
-        row = _index_row(u, db)
-        if not row:
-            return None
-        m = row.meta or {}
-        v = m.get("last")
-        if v is None and row.history:
-            v = row.history[-1].get("c")
-        return float(v) if v is not None else None
-    row = _equity_row(u, db)
-    if not row:
-        return None
-    m = row.meta or {}
-    v = m.get("lastPrice")
-    if v is None and row.history:
-        v = row.history[-1].get("c")
-    return float(v) if v is not None else None
+    row = _resolve_instrument(underlying, db, ("INDEX", "EQUITY", "ETF"))
+    return _instrument_mark(row) if row else None
 
 
 def _chain(underlying: str) -> dict | None:
     """Live option chain for one underlying, cached by the NSE adapter."""
-    u = underlying.upper()
+    u = _fno_key(underlying)
     try:
         raw = (N.nse.index_option_chain(u) if u in FNO_INDEX_KEYS
                else N.nse.equity_option_chain(u))
@@ -387,24 +460,89 @@ def portfolio_history(db: Session = Depends(get_db)):
     }
 
 
+def _quote_fill(payload: QuoteIn, db: Session) -> dict:
+    """Price one prospective leg without writing to the ledger."""
+    cash = float(_summary(db).get("cash_available") or STARTING_CASH)
+    if payload.asset_class == "EQUITY":
+        if not payload.quantity:
+            raise HTTPException(422, "quantity is required for a quote")
+        row = _resolve_instrument(payload.symbol, db, ("EQUITY", "ETF", "INDEX"))
+        price = _instrument_mark(row) if row else _equity_mark(payload.symbol, db)
+        if price is None:
+            raise HTTPException(404, f"No price data for {payload.symbol}")
+        qty = float(payload.quantity)
+        value = price * qty
+        charges = _equity_charges(payload.side, value)
+        return {"asset_class": "EQUITY", "symbol": row.symbol if row else payload.symbol.upper(),
+                "name": row.name if row else payload.symbol.upper(),
+                "kind": row.kind if row else "EQUITY", "price": round(price, 2),
+                "quantity": qty, "lot_size": 1, "lots": None,
+                "value": round(value, 2), "charges": round(charges, 2),
+                "cash_available": round(cash, 2),
+                "cash_after": round(cash - value - charges if payload.side == "BUY"
+                                    else cash + value - charges, 2),
+                "source": "stored/live free-feed mark"}
+    if not payload.underlying or not payload.option_type or not payload.lots:
+        raise HTTPException(422, "underlying, option_type and lots are required")
+    underlying = _fno_key(payload.underlying)
+    lot_size = payload.lot_size or LOT_SIZES.get(underlying, 1)
+    qty = float(payload.lots) * lot_size
+    product = "FUTURES" if payload.option_type == "FUT" else "OPTIONS"
+    if payload.option_type == "FUT":
+        price = payload.price or _underlying_spot(payload.underlying, db)
+        source = ("caller-supplied futures price" if payload.price
+                  else "live index spot (futures proxy)")
+        if price is None:
+            raise HTTPException(404, "No live spot to proxy this futures fill")
+    else:
+        if not payload.strike:
+            raise HTTPException(422, "strike is required for an option quote")
+        price, source, err = _option_premium(underlying, payload.option_type,
+                                             payload.strike, payload.expiry)
+        if err and payload.price:
+            price, source = payload.price, "caller-supplied premium"
+            err = None
+        if err or price is None:
+            raise HTTPException(404, err or "No live premium for this contract")
+    value = float(price) * qty
+    charges = _fno_charges_one_side(payload.side, value, product)
+    return {"asset_class": "DERIVATIVE", "symbol": underlying,
+            "name": underlying, "kind": "INDEX" if underlying in FNO_INDEX_KEYS else "EQUITY",
+            "price": round(float(price), 2), "quantity": qty,
+            "lot_size": lot_size, "lots": payload.lots,
+            "value": round(value, 2), "charges": round(charges, 2),
+            "cash_available": round(cash, 2),
+            "cash_after": round(cash - value - charges if payload.side == "BUY"
+                                else cash + value - charges, 2),
+            "source": source}
+
+
+@router.post("/sandbox/quote")
+def quote_order(payload: QuoteIn, db: Session = Depends(get_db)):
+    return _quote_fill(payload, db)
+
+
 @router.post("/sandbox/orders")
 def place_order(payload: OrderIn, db: Session = Depends(get_db)):
     if payload.asset_class == "EQUITY":
         if not payload.quantity:
             raise HTTPException(422, "quantity is required for an equity order")
-        mark = _equity_mark(payload.symbol, db)
+        row = _resolve_instrument(payload.symbol, db, ("EQUITY", "ETF", "INDEX"))
+        mark = _instrument_mark(row) if row else _equity_mark(payload.symbol, db)
         if mark is None:
             raise HTTPException(404, f"No price data for {payload.symbol} — "
                                      "cannot price a sandbox fill")
+        symbol = row.symbol if row else payload.symbol.upper()
         value = mark * payload.quantity
         charges = _equity_charges(payload.side, value)
-        o = SandboxOrder(symbol=payload.symbol.upper(), side=payload.side,
+        o = SandboxOrder(symbol=symbol[:32], side=payload.side,
                          quantity=payload.quantity, entry_price=mark,
                          note=payload.note, status="OPEN", asset_class="EQUITY",
                          charges=charges)
         db.add(o)
         db.commit()
         return {"id": o.id, "asset_class": "EQUITY",
+                "name": row.name if row else symbol,
                 "filled_at": "EOD/delayed mark", "fill_price": o.entry_price,
                 "quantity": o.quantity, "charges": charges,
                 "value": round(value, 2), "status": o.status,
@@ -417,17 +555,18 @@ def place_order(payload: OrderIn, db: Session = Depends(get_db)):
         raise HTTPException(422, "option_type (CE/PE/FUT) is required")
     if not payload.lots:
         raise HTTPException(422, "lots is required for a derivative order")
-    underlying = payload.underlying.upper()
+    underlying = _fno_key(payload.underlying)
     lot_size = payload.lot_size or LOT_SIZES.get(underlying, 1)
     qty = payload.lots * lot_size
     product = "FUTURES" if payload.option_type == "FUT" else "OPTIONS"
 
     if payload.option_type == "FUT":
-        if not payload.price:
-            raise HTTPException(422, "A futures price is required — no free "
-                                     "futures feed is stored, so the platform "
-                                     "will not invent a fill.")
-        price, source, err = payload.price, "caller-supplied futures price", None
+        price = payload.price or _underlying_spot(payload.underlying, db)
+        source = ("caller-supplied futures price" if payload.price
+                  else "live index spot (futures proxy)")
+        if price is None:
+            raise HTTPException(404, "No live spot to proxy this futures fill")
+        err = None
     else:
         if not payload.strike:
             raise HTTPException(422, "strike is required for an option order")

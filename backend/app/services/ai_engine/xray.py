@@ -19,7 +19,31 @@ mistaken for an exchange-reported one.
 """
 from __future__ import annotations
 
+import datetime as dt
+
 from sqlalchemy.orm import Session
+
+
+def _last_completed_session() -> dt.date:
+    """Latest completed weekday session, using IST and the 4:30 PM close."""
+    now_ist = dt.datetime.utcnow() + dt.timedelta(hours=5, minutes=30)
+    day = now_ist.date()
+    if now_ist.time() < dt.time(16, 30):
+        day -= dt.timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= dt.timedelta(days=1)
+    return day
+
+
+def _session_stamp(asof) -> tuple[str, str]:
+    day = None
+    if asof:
+        try:
+            day = dt.date.fromisoformat(str(asof)[:10])
+        except (TypeError, ValueError):
+            day = None
+    day = day or _last_completed_session()
+    return day.isoformat(), day.strftime("%A, %d %B %Y")
 
 from app.services.ai_engine import streetpulse as SP
 
@@ -109,8 +133,11 @@ def build(db: Session) -> dict:
 
     flows = SP._flows()
     shockers = _volume_shockers(rows)
+    session_date, session_label = _session_stamp(p.get("asof_date"))
     return {
         "asof": p.get("asof_date"),
+        "session_date": session_date,
+        "session_label": session_label,
         "market_status": p.get("market_status"),
         "chain": {
             "step_1_official_flows": flows,

@@ -126,7 +126,7 @@ export default function Home() {
     { t: "Corporate Events", href: "/events", icon: "▦", b: "Dividends, splits and board meetings — the real calendar.", m: counts ? `${counts.events} actions` : "—" },
     { t: "REITs", href: "/reits", icon: "▮", b: "Trust units with the 90% NDCA rule explained.", m: counts ? `${counts.reits} trusts` : "—" },
     { t: "Market Pulse", href: "/market-pulse", icon: "≋", b: "The 4 PM end-of-day x-ray: breadth, flows, actions.", m: breadth ? `${breadth.advances}A / ${breadth.declines}D` : "—" },
-    { t: "AI Quant", href: "/ai-quant-hub", icon: "⌁", b: "RangeCast bands, StreetPulse flow and EOD x-ray.", m: "Model engines" },
+    { t: "AI Quant", href: "/ai-quant-hub", icon: "⌁", b: "RangeCast bands, StreetPulse flow and session x-ray.", m: "Model engines" },
     { t: "Academy", href: "/learn", icon: "◇", b: "Beginner-to-derivatives course — free and structured.", m: "Free tracks" },
   ];
 
@@ -159,7 +159,7 @@ export default function Home() {
             </p>
             <div className="flex flex-wrap gap-2.5 mt-7">
               <Link href="/indices" className="btn-primary">Explore indices →</Link>
-              <Link href="/stocks" className="btn-secondary">Open equity screener</Link>
+              <Link href="/stocks" className="btn-secondary">Open equities desk</Link>
               <Link href="/ai-quant-hub" className="btn-secondary">AI Quant Hub</Link>
             </div>
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2 mt-6 muted text-[11px]">
@@ -180,7 +180,7 @@ export default function Home() {
             <div className="flex items-center justify-between gap-3 mb-4">
               <div>
                 <div className="muted text-[10px] font-bold uppercase tracking-[0.16em]">Market snapshot</div>
-                <div className="text-[13px] font-bold mt-0.5">NSE · BSE · GIFT corridor</div>
+                <div className="text-[13px] font-bold mt-0.5">Indian market corridor</div>
               </div>
               <MarketClock showSeconds />
             </div>
@@ -300,7 +300,7 @@ export default function Home() {
             <span className="ml-auto muted text-[10.5px]">
               {chartIdx?.asof
                 ? `Session ${fmtDate(chartIdx.asof)}`
-                : "Free delayed feed"}
+                : "Indicative snapshot"}
             </span>
           </div>
 

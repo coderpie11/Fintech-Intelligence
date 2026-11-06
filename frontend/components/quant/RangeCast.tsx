@@ -1,14 +1,31 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getJSON } from "@/lib/api";
 import { inr } from "@/lib/format";
+import MetricTip from "@/components/MetricTip";
 import { Bar, ErrLine, Loading, Metric, Note, Panel, Pill, num, signed } from "./Kit";
 
 const QUICK = ["RELIANCE", "TCS", "HDFCBANK", "NIFTY", "BANKNIFTY"];
 const HORIZONS = [7, 14, 21, 30];
 
+type Pick = { kind: string; symbol: string; name: string; label?: string; aliases?: string };
 type Band = [number, number];
+
+const BAND_COPY: Record<string, { title: string; tip: string }> = {
+  "68": {
+    title: "Likely Trading Range (68% Normal Weekly Range)",
+    tip: "Normal market conditions mein share ke is price range ke beech rehne ki 68% umeed hai.",
+  },
+  "80": {
+    title: "Safety Boundary Range (80%–85% Extreme Range)",
+    tip: "Badi khabar ya utaar-chadhav aane par bhi share 80%–85% time is boundary ke andar rehta hai.",
+  },
+  "95": {
+    title: "Extreme Tail Range (95% Statistical Boundary)",
+    tip: "Sirf 5% chances hain ki share is sabse wide boundary ke bahar jaaye. Ise price target na samjhein.",
+  },
+};
 
 type RangeCastData = {
   symbol: string;
@@ -74,11 +91,28 @@ export default function RangeCast() {
   const [data, setData] = useState<RangeCastData | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [preload, setPreload] = useState<Pick[]>([]);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    getJSON("/search/preload")
+      .then((d) => setPreload((d.items || []).filter((x: Pick) =>
+        ["EQUITY", "ETF", "INDEX"].includes(x.kind))))
+      .catch(() => {});
+  }, []);
+
+  const suggestions = useMemo(() => {
+    const needle = symbol.trim().toLowerCase();
+    if (!needle) return [];
+    return preload.filter((x) =>
+      `${x.symbol} ${x.name} ${x.label || ""} ${x.aliases || ""}`.toLowerCase().includes(needle)
+    ).slice(0, 8);
+  }, [symbol, preload]);
 
   const run = (sym = symbol, h = horizon) => {
     setBusy(true);
     setErr(null);
-    getJSON<RangeCastData>(`/quant-hub/rangecast/${encodeURIComponent(sym.trim().toUpperCase())}?horizon_days=${h}`)
+    getJSON<RangeCastData>(`/quant-hub/rangecast/${encodeURIComponent(sym.trim())}?horizon_days=${h}`)
       .then(setData)
       .catch((e) => setErr(String(e.message || e).slice(0, 200)))
       .finally(() => setBusy(false));
@@ -95,20 +129,36 @@ export default function RangeCast() {
     <div className="space-y-3">
       <Panel
         title="RangeCast AI — 7 / 14-day probabilistic bands"
-        sub="A statistical price envelope built from this instrument's own realised volatility, then clipped at the largest live F&O open-interest walls. It is a distribution, not a direction call."
+        sub="A statistical price envelope built from this instrument's own realised volatility, then clipped at the largest live F&O open-interest walls. Type a ticker or a company name — it resolves automatically. It is a distribution, not a direction call."
       >
         <div className="flex flex-wrap items-end gap-2">
-          <label className="block">
-            <span className="muted text-[9.5px] font-bold uppercase tracking-[0.13em] block mb-1">Symbol</span>
-            <input
-              value={symbol}
-              onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-              onKeyDown={(e) => { if (e.key === "Enter") run(); }}
-              placeholder="RELIANCE / NIFTY"
-              className="surface rounded-lg px-3 py-2 knum w-44 text-[13px]"
-              style={{ color: "var(--ink)" }}
-            />
-          </label>
+          <div className="relative">
+            <label className="block">
+              <span className="muted text-[9.5px] font-bold uppercase tracking-[0.13em] block mb-1">Symbol</span>
+              <input
+                value={symbol}
+                onChange={(e) => { setSymbol(e.target.value); setOpen(true); }}
+                onFocus={() => setOpen(true)}
+                onKeyDown={(e) => { if (e.key === "Enter") { setOpen(false); run(); } }}
+                placeholder="Paras Defence / TCS / RELIANCE / NIFTY"
+                className="surface rounded-lg px-3 py-2 knum w-44 text-[13px]"
+                style={{ color: "var(--ink)" }}
+              />
+            </label>
+            {open && suggestions.length > 0 && (
+              <div className="absolute z-40 mt-1 w-[330px] max-h-[260px] overflow-auto rounded-lg p-1.5"
+                   style={{ background: "var(--surface)", border: "1px solid var(--line)", boxShadow: "0 12px 32px rgba(0,0,0,.22)" }}>
+                {suggestions.map((it) => (
+                  <button key={`${it.kind}-${it.symbol}`}
+                          onClick={() => { setSymbol(it.symbol); setOpen(false); run(it.symbol, horizon); }}
+                          className="w-full text-left rounded-md px-2.5 py-1.5 hover:opacity-80">
+                    <span className="text-[11.5px] font-bold">{it.symbol}</span>
+                    <span className="muted text-[10px] ml-1.5">— {it.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <label className="block">
             <span className="muted text-[9.5px] font-bold uppercase tracking-[0.13em] block mb-1">Horizon</span>
             <select
@@ -138,8 +188,8 @@ export default function RangeCast() {
       {d && (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
-            <Metric label="Spot" value={inr(d.spot?.value)} sub={`${d.kind} · as of ${d.asof || "latest session"}`}
-                    tip={{ meaning: "The last available price from the platform store. On the free feed it is end-of-day or delayed, not a live tick." }} />
+            <Metric label="Spot" value={inr(d.spot?.value)} sub={`${d.symbol} · ${d.kind} · as of ${d.asof || "latest session"}`}
+                    tip={{ meaning: "The last available price from the platform store. It is an indicative mark, not a live tick." }} />
             <Metric label="Daily σ" value={`${num(d.volatility?.daily_pct, 3)}%`} sub="1-session standard deviation"
                     tip={{ meaning: "How far the price typically moves in one session, as the standard deviation of daily log returns.",
                            formula: "σ_daily = std( ln(Close_t ÷ Close_{t−1}) )" }} />
@@ -163,7 +213,8 @@ export default function RangeCast() {
                     <div key={conf} className="rounded-lg px-3 py-2.5"
                          style={{ border: `1px solid ${is80 ? "color-mix(in srgb, var(--accent) 45%, var(--line))" : "var(--line)"}` }}>
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-bold uppercase tracking-[0.1em] muted">{conf}% band</span>
+                        <MetricTip label={BAND_COPY[conf]?.title || `${conf}% probability band`}
+                                   tip={{ meaning: BAND_COPY[conf]?.tip || "Statistical range from realised volatility." }} />
                         <span className="knum text-[12.5px] font-bold">
                           <span className="text-[var(--down)]">{inr(band[0])}</span>
                           <span className="muted mx-1">to</span>
@@ -186,7 +237,10 @@ export default function RangeCast() {
             </Panel>
 
             <div className="space-y-3">
-              <Panel title="OI-wall overlay" sub={d.oi_walls?.expiry ? `NSE chain expiry ${d.oi_walls.expiry}` : "Live NSE chain"}>
+              <Panel title="Option Traders' Floor & Ceiling (OI Support & Resistance)" sub={d.oi_walls?.expiry ? `NSE chain expiry ${d.oi_walls.expiry}` : "Live NSE chain"}>
+                <div className="mb-2">
+                  <MetricTip label="What this means" tip={{ meaning: "Jis strike price par sabse zyada Put aur Call options khule hain—yeh share ke liye strong floor (support) aur ceiling (resistance) ka kaam karte hain." }} />
+                </div>
                 {d.oi_walls?.available ? (
                   <>
                     <div className="flex flex-wrap items-center gap-2 mb-2.5">
@@ -225,7 +279,8 @@ export default function RangeCast() {
                   <div className="mt-3 rounded-lg px-3 py-2.5"
                        style={{ border: "1px solid color-mix(in srgb, var(--accent) 30%, var(--line))",
                                 background: "color-mix(in srgb, var(--accent) 6%, transparent)" }}>
-                    <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em]">Wall-adjusted 80% band</div>
+                    <MetricTip label="Safety Boundary — OI-clamped 80% range"
+                               tip={{ meaning: "Volatility ka 80% range, option open-interest walls se clip kiya hua—taaki boundary zyada realistic ho." }} />
                     <div className="knum text-[14px] font-bold mt-1">{inr(adjusted[0])} — {inr(adjusted[1])}</div>
                     {(d.wall_clamps || []).length > 0 && (
                       <ul className="muted text-[10.5px] mt-1 list-disc pl-4">
@@ -236,7 +291,10 @@ export default function RangeCast() {
                 )}
               </Panel>
 
-              <Panel title="Delivery Z-score" sub="Does today's delivery look normal for this stock?">
+              <Panel title="Real Delivery Buying Strength (Delivery Score)" sub="Does today's delivery look normal for this stock?">
+                <div className="mb-2">
+                  <MetricTip label="What this means" tip={{ meaning: "Batata hai ki log sirf intraday sutta khel rahe hain ya sach mein demat account mein shares kharid kar rakh rahe hain." }} />
+                </div>
                 {d.delivery?.available ? (
                   <>
                     <div className="grid grid-cols-3 gap-2">

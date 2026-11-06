@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.data.adapters import nse_adapter as N
 from app.models.models import DeliveryStat, Instrument
-from app.services import calc
+from app.services import calc, fuzzy
 from app.services.contextual import (reported, source_issue, unavailable,
                                      SOURCE_ISSUE, NOT_DISCLOSED)
 
@@ -53,13 +53,47 @@ FNO_INDEX_KEY = {
 
 
 def _resolve(db: Session, symbol: str) -> tuple[Instrument | None, str]:
-    raw = symbol.strip().upper()
-    alias = INDEX_ALIASES.get(raw)
+    raw = (symbol or "").strip()
+    if not raw:
+        return None, "EQUITY"
+    up = raw.upper()
+    alias = INDEX_ALIASES.get(up)
     if alias:
-        return (db.query(Instrument).filter_by(kind="INDEX", symbol=alias)
-                  .one_or_none(), "INDEX")
-    return (db.query(Instrument).filter_by(kind="EQUITY", symbol=raw)
-              .one_or_none(), "EQUITY")
+        row = (db.query(Instrument).filter_by(kind="INDEX", symbol=alias)
+                 .one_or_none())
+        if row:
+            return row, "INDEX"
+    row = (db.query(Instrument).filter_by(kind="EQUITY", symbol=up)
+             .one_or_none())
+    if row:
+        return row, "EQUITY"
+
+    # The user may type a company name, a partial name or a misspelling
+    # ("PARAS DEFENCE", "paras", "reliance industries"). Match it against the
+    # tracked equity/index universe before giving up.
+    candidates = (db.query(Instrument)
+                    .filter(Instrument.kind.in_(("EQUITY", "INDEX")))
+                    .all())
+
+    def pick(text: str, floor: float) -> Instrument | None:
+        ranked = fuzzy.rank(text, candidates,
+                            lambda r: f"{r.symbol} {r.name}",
+                            limit=1, floor=floor)
+        return ranked[0] if ranked else None
+
+    found = pick(raw, 0.62)
+    if found is None:
+        # Try the significant words individually; the full sentence around a
+        # company name is often too noisy for one fuzzy score.
+        for token in sorted(fuzzy.tokens(raw), key=len, reverse=True)[:4]:
+            if len(token) < 3:
+                continue
+            found = pick(token, 0.74)
+            if found:
+                break
+    if found is None:
+        return None, "EQUITY"
+    return found, "INDEX" if found.kind == "INDEX" else "EQUITY"
 
 
 def _spot(row: Instrument) -> float | None:

@@ -103,6 +103,13 @@ export default function StockDetailPage() {
   const [drawer, setDrawer] = useState(false);
   const [scrub, setScrub] = useState<ChartHoverPoint | null>(null);
 
+  const openFno = () => {
+    setTab("fno");
+    setTimeout(() => {
+      document.getElementById("fno-section-anchor")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 60);
+  };
+
   useEffect(() => {
     let live = true;
     setD(null);
@@ -237,7 +244,7 @@ export default function StockDetailPage() {
                 {scrub
                   ? `${scrub.label} · chart candle`
                   : (d.live_time || (d.asof ? `Session ${fmtDate(d.asof)}` : "Latest available session"))}
-                {" · "}NSE · delayed
+                {" · "}indicative
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
@@ -341,7 +348,7 @@ export default function StockDetailPage() {
       </div>
 
       <div className="mb-5">
-        <Tabs tabs={tabs} active={tab} onChange={setTab} />
+        <Tabs tabs={tabs} active={tab} onChange={(k) => (k === "fno" ? openFno() : setTab(k))} />
       </div>
 
       {tab === "overview" && (
@@ -499,11 +506,13 @@ export default function StockDetailPage() {
       )}
 
       {tab === "fno" && (
+        <div id="fno-section-anchor" className="scroll-mt-24">
         <section>
           <SectionTitle title={`${d.symbol} derivatives`}
                         sub="Live NSE option chain with platform-computed Greeks, probability of profit and the time/theta replay calculator." />
           <FnoTab underlying={d.symbol} />
         </section>
+        </div>
       )}
 
       {tab === "sources" && (
@@ -514,9 +523,9 @@ export default function StockDetailPage() {
               {[
                 ["NSE symbol", d.symbol],
                 ["Sector", d.sector || "—"],
-                ["Price source", "Yahoo Finance quoteSummary (delayed) / stored NSE quote"],
-                ["Statement source", d.statements?.annual?.source || "Yahoo Finance reported statements"],
-                ["Shareholding source", d.shareholding?.source || "Screener.in quarterly pattern"],
+                ["Price basis", "Platform quote snapshot (indicative)"],
+                ["Statement basis", "Reported company statements"],
+                ["Shareholding basis", "Quarterly shareholding pattern"],
                 ["History depth", `${Number(d.history_points || 0).toLocaleString("en-IN")} daily sessions`],
                 ["Data stamp", d.asof ? fmtDate(d.asof) : "—"],
               ].map(([k, v]) => (

@@ -54,17 +54,22 @@ function money(v: number | null, suffix = ""): string {
   return `₹${v.toLocaleString("en-IN", { maximumFractionDigits: 2 })}${suffix}`;
 }
 
-const STATUS_META: Record<string, { label: string; dot: string; cls: string }> = {
-  LIVE: { label: "Open", dot: "#16a34a", cls: "text-up" },
-  UPCOMING: { label: "Upcoming", dot: "#2563eb", cls: "text-[var(--accent)]" },
-  CLOSED: { label: "Closed", dot: "#d97706", cls: "text-warn" },
-  LISTED: { label: "Listed", dot: "#6b7280", cls: "muted" },
+const STATUS_META: Record<string, { label: string; dot: string; pill: string }> = {
+  LIVE: { label: "Open Now", dot: "#2dd4bf", pill: "bg-teal-500/15 text-teal-300 border-teal-500/40" },
+  TODAY: { label: "Opening / Closing Today", dot: "#fbbf24", pill: "bg-amber-500/15 text-amber-300 border-amber-500/40" },
+  UPCOMING: { label: "Upcoming", dot: "#a78bfa", pill: "bg-purple-500/15 text-purple-300 border-purple-500/40" },
+  CLOSED: { label: "Closed", dot: "#a1a1aa", pill: "bg-zinc-500/15 text-zinc-300 border-zinc-500/40" },
+  LISTED: { label: "Listed", dot: "#34d399", pill: "bg-emerald-500/15 text-emerald-400 border-emerald-500/40" },
+  LOSS: { label: "Listed in Loss", dot: "#fb7185", pill: "bg-rose-500/15 text-rose-400 border-rose-500/40" },
 };
 
-function StatusDot({ status }: { status: string }) {
-  const meta = STATUS_META[status] || STATUS_META.CLOSED;
+function StatusDot({ status, gain, today }: { status: string; gain?: number | null; today?: boolean }) {
+  const key = status === "LISTED" && gain != null && gain < 0
+    ? "LOSS"
+    : today ? "TODAY" : status;
+  const meta = STATUS_META[key] || STATUS_META.CLOSED;
   return (
-    <span className="inline-flex items-center gap-1.5 text-[10.5px] font-semibold" style={{ color: "var(--ink)" }}>
+    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-semibold ${meta.pill}`}>
       <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: meta.dot }} />
       {meta.label}
     </span>
@@ -150,6 +155,7 @@ export function IpoList() {
   const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState("all");
   const [board, setBoard] = useState("all");
+  const [result, setResult] = useState("all");
   const [q, setQ] = useState("");
 
   useEffect(() => {
@@ -162,13 +168,24 @@ export function IpoList() {
   const counts = data?.filter_counts || {};
   const summary = data?.summary || {};
   const rows: IpoRow[] = data?.ipos || [];
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const shownRows = useMemo(() => rows.filter((r) => {
+    if (filter === "today" && r.open !== todayIso && r.close !== todayIso) return false;
+    if (filter === "listed" && result !== "all") {
+      const gain = envNum(r.realised_gain_pct) ?? envNum(r.performance?.changepct)
+        ?? envNum(r.est_listing_gain_pct);
+      if (gain == null) return false;
+      return result === "gain" ? gain > 0 : gain < 0;
+    }
+    return true;
+  }), [rows, filter, result, todayIso]);
 
   return (
     <div className="mx-auto max-w-[1680px] px-4 sm:px-6 pb-16">
       <PageHeader
         eyebrow="IPO · live GMP · mainboard & SME"
         title="Live IPO GMP Dashboard"
-        sub="InvestorGain-style live grey-market premium, fire rating, subscription, issue structure and day-wise GMP history, merged with exchange offer-document facts. GMP is unofficial and can vanish on listing day."
+        sub="Live grey-market premium, fire rating, subscription, issue structure and day-wise GMP history, merged with exchange offer-document facts. GMP is unofficial and can vanish on listing day."
         right={<RefreshButton stage="events" label="Refresh live GMP" />}
       />
 
@@ -203,30 +220,45 @@ export function IpoList() {
             </div>
           </div>
 
-          {/* filters */}
+          {/* professional dropdown filters */}
           <div className="sticky top-0 z-20 -mx-4 sm:-mx-6 px-4 sm:px-6 py-2.5 mb-3 backdrop-blur"
                style={{ background: "color-mix(in srgb, var(--bg) 88%, transparent)", borderBottom: "1px solid var(--line)" }}>
             <div className="flex flex-wrap items-center gap-2">
-              <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid var(--line)" }}>
-                {[["all", "All boards"], ["mainboard", "Mainboard"], ["sme", "SME"]].map(([k, label]) => (
-                  <button key={k} onClick={() => setBoard(k)}
-                          className={`px-3 py-1.5 text-[11px] font-semibold ${board === k ? "chip-active" : ""}`}>
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {[
-                  ["all", `All (${counts.all ?? 0})`],
-                  ["open", `Open 🟢 (${counts.open ?? 0})`],
-                  ["upcoming", `Upcoming 🔵 (${counts.upcoming ?? 0})`],
-                  ["closed", `Closed / Allotment 🟡 (${counts.closed ?? 0})`],
-                  ["listed", `Listed ⚪ (${counts.listed ?? 0})`],
-                ].map(([k, label]) => (
-                  <button key={k} onClick={() => setFilter(k)}
-                          className={`chip !text-[10.5px] ${filter === k ? "chip-active" : ""}`}>{label}</button>
-                ))}
-              </div>
+              <label className="block">
+                <span className="muted text-[8.5px] font-bold uppercase tracking-[0.13em] block mb-0.5">Board</span>
+                <select value={board} onChange={(e) => setBoard(e.target.value)}
+                        className="surface rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold"
+                        style={{ color: "var(--ink)" }}>
+                  <option value="all">All Boards (Mainboard + SME)</option>
+                  <option value="mainboard">Mainboard Only</option>
+                  <option value="sme">SME Only</option>
+                </select>
+              </label>
+              <label className="block">
+                <span className="muted text-[8.5px] font-bold uppercase tracking-[0.13em] block mb-0.5">IPO Status</span>
+                <select value={filter} onChange={(e) => { setFilter(e.target.value); if (e.target.value !== "listed") setResult("all"); }}
+                        className="surface rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold"
+                        style={{ color: "var(--ink)" }}>
+                  <option value="all">All IPOs (Default)</option>
+                  <option value="open">🟢 Open Now ({counts.open ?? 0})</option>
+                  <option value="today">🟠 Closing Today / Opening Today</option>
+                  <option value="upcoming">🟣 Upcoming IPOs ({counts.upcoming ?? 0})</option>
+                  <option value="closed">⚪ Closed (Allotment Pending) ({counts.closed ?? 0})</option>
+                  <option value="listed">📊 Listed Shares ({counts.listed ?? 0})</option>
+                </select>
+              </label>
+              {filter === "listed" && (
+                <label className="block">
+                  <span className="muted text-[8.5px] font-bold uppercase tracking-[0.13em] block mb-0.5">Listing Result</span>
+                  <select value={result} onChange={(e) => setResult(e.target.value)}
+                          className={`surface rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold border ${result === "gain" ? "text-emerald-400 border-emerald-500/40" : result === "loss" ? "text-rose-400 border-rose-500/40" : ""}`}
+                          style={{ color: result === "gain" ? "#34d399" : result === "loss" ? "#fb7185" : "var(--ink)" }}>
+                    <option value="all">All Listed Shares</option>
+                    <option value="gain">🟢 Listed in Profit (Positive Listing Gain &gt; 0%)</option>
+                    <option value="loss">🔴 Listed in Loss (Negative Listing Return &lt; 0%)</option>
+                  </select>
+                </label>
+              )}
               <div className="surface rounded-lg px-3 py-1.5 flex-1 min-w-[200px] max-w-sm ml-auto">
                 <input value={q} onChange={(e) => setQ(e.target.value)}
                        placeholder="Search IPO company or symbol…"
@@ -238,7 +270,7 @@ export function IpoList() {
 
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <span className="muted text-[11px]">
-              {rows.length} of {data.total ?? rows.length} issues ·{" "}
+              {shownRows.length} of {data.total ?? rows.length} issues ·{" "}
               <span className="accent font-semibold">{data.feed_status?.value || "Live feed"}</span>
             </span>
             <span className="muted text-[10.5px]">Sort: status → newest listing</span>
@@ -263,7 +295,7 @@ export function IpoList() {
                     </th>
                     <th className="table-head text-center px-2.5 py-2.5">
                       <MetricTip label="Fire rating" tip={{
-                        meaning: "A 1–5 demand indicator published by InvestorGain, based on GMP and subscription momentum. It is sentiment, not valuation.",
+                        meaning: "A 1-5 demand indicator built from GMP and subscription momentum. It is sentiment, not valuation.",
                       }}>Fire</MetricTip>
                     </th>
                     <th className="table-head text-right px-2.5 py-2.5">Lot · Min ₹</th>
@@ -276,7 +308,7 @@ export function IpoList() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r) => {
+                  {shownRows.map((r) => {
                     const price = envNum(r.price);
                     const gmp = envNum(r.gmp);
                     const gmpPct = envNum(r.gmp_pct);
@@ -294,15 +326,22 @@ export function IpoList() {
                     const listed = r.status === "LISTED";
                     const perf = envNum(r.performance?.last);
                     const realised = envNum(r.realised_gain_pct) ?? envNum(r.performance?.changepct);
+                    const isToday = r.open === todayIso || r.close === todayIso;
+                    const accent = listed
+                      ? ((realised || 0) >= 0 ? "#34d399" : "#fb7185")
+                      : isToday ? "#fbbf24"
+                      : r.status === "LIVE" ? "#2dd4bf"
+                      : r.status === "UPCOMING" ? "#a78bfa" : "#a1a1aa";
                     return (
-                      <tr key={r.id} className="table-row align-top">
+                      <tr key={r.id} className="table-row align-top"
+                          style={{ borderLeft: `3px solid ${accent}` }}>
                         <td className="px-3 py-3">
                           <Link href={r.href} className="text-[12.5px] font-bold hover:underline leading-snug block">
                             {r.name}
                           </Link>
                           <div className="flex items-center gap-1.5 mt-1">
                             <span className="chip !text-[8.5px] !px-1.5 !py-0.5">{r.board === "SME" ? "SME" : "Mainboard"}</span>
-                            <StatusDot status={r.status} />
+                            <StatusDot status={r.status} gain={listed ? realised : null} today={isToday} />
                           </div>
                           {r.symbol && <div className="muted text-[9.5px] mt-1">{r.symbol}</div>}
                         </td>
@@ -383,9 +422,9 @@ export function IpoList() {
                       </tr>
                     );
                   })}
-                  {rows.length === 0 && (
+                  {shownRows.length === 0 && (
                     <tr><td colSpan={10} className="px-4 py-8 muted text-[12.5px] text-center">
-                      No IPO matches this filter. Try the All tab or clear the search.
+                      No IPO matches these dropdown filters. Try “All IPOs” or clear the search.
                     </td></tr>
                   )}
                 </tbody>

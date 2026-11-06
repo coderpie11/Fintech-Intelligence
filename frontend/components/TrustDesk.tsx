@@ -255,7 +255,7 @@ export function ReitDetail({ symbol }: { symbol: string }) {
                   {envNum(d.changepct) != null ? pct(envNum(d.changepct)) : "—"}
                 </span>
               </div>
-              <div className="muted text-[11px] mt-1.5">As of {d.asof?.value ? fmtDate(d.asof.value) : "—"} · EOD/delayed</div>
+              <div className="muted text-[11px] mt-1.5">As of {d.asof?.value ? fmtDate(d.asof.value) : "—"}</div>
             </div>
             <div className="flex flex-wrap gap-1.5">
               <span className="chip !text-[9.5px]">NDCF {envNum(d.ndcf_yield_pct) != null ? `${envNum(d.ndcf_yield_pct)!.toFixed(1)}%` : "—"}</span>

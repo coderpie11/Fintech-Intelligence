@@ -32,6 +32,7 @@ type Ev = {
   upcoming: boolean;
   completed: boolean;
   in_universe: boolean;
+  synthetic?: boolean;
   calc_prefill: Record<string, any> | null;
   href: string | null;
 };
@@ -46,7 +47,7 @@ const TAB_TONE: Record<string, string> = {
   OTHER: "",
 };
 
-const AVATAR_COLORS = ["#2563eb", "#7c3aed", "#db2777", "#ea580c", "#0891b2", "#16a34a", "#ca8a04"];
+const AVATAR_COLORS = ["#10b981", "#7c3aed", "#db2777", "#ea580c", "#0d9488", "#16a34a", "#ca8a04"];
 
 function envNum(e?: Env): number | null {
   return e && e.value != null ? e.value : null;
@@ -201,7 +202,7 @@ export default function EventsDesk() {
   return (
     <div className="mx-auto max-w-[1680px] px-4 sm:px-6 pb-16">
       <PageHeader
-        eyebrow="Corporate events · Groww / Zerodha style"
+        eyebrow="Corporate events calendar"
         title="Corporate Actions Calendar"
         sub="Dividends, splits, bonuses, buybacks, rights, mergers and board meetings with announcement details, ex-date countdowns, live prices and one-click prefill into the matching calculator."
         right={<RefreshButton stage="events" />}
@@ -236,9 +237,18 @@ export default function EventsDesk() {
             </div>
             <div className="surface rounded-lg px-3 py-1.5 flex-1 min-w-[200px] max-w-sm">
               <input value={q} onChange={(e) => setQ(e.target.value)}
-                     placeholder="Search company or symbol…"
+                     placeholder="Search any of the 2,401 NSE companies…"
                      className="w-full bg-transparent text-[12.5px] outline-none"
                      style={{ color: "var(--ink)" }} />
+            </div>
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="muted text-[9.5px] font-bold uppercase tracking-wider">Quick</span>
+              {["PARAS", "HAL", "BEL", "MAZDOCK", "ZOMATO", "TRENT"].map((s) => (
+                <button key={s} onClick={() => { setQ(s); setWin("all"); setKind("ALL"); }}
+                        className={`chip !text-[9.5px] ${q.toUpperCase() === s ? "chip-active" : ""}`}>
+                  {s}
+                </button>
+              ))}
             </div>
             <div className="flex items-center gap-1.5 ml-auto">
               <span className="muted text-[10px] font-bold uppercase tracking-wider">Sort</span>
@@ -298,7 +308,15 @@ export default function EventsDesk() {
                               ) : (
                                 <div className="text-[12.5px] font-bold leading-snug">{e.company}</div>
                               )}
-                              <div className="muted text-[9.5px] mt-0.5">{e.symbol || "—"}</div>
+                              <div className="muted text-[9.5px] mt-0.5 flex items-center gap-1.5">
+                                <span>{e.symbol || "—"}</span>
+                                {e.synthetic && (
+                                  <span className="chip !text-[8px] !py-0 !px-1.5"
+                                        title="Synthesized from the company calendar because the local store had fewer than two rows">
+                                    on-the-fly
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
                         </td>

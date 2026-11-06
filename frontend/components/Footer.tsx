@@ -1,19 +1,23 @@
 import Link from "next/link";
 import DisclaimerBand from "./DisclaimerBand";
+import BrandMark from "./BrandMark";
 
 export default function Footer() {
   return (
     <footer className="mt-16 border-t border-rule" style={{ borderColor: "var(--line)" }}>
       <div className="mx-auto max-w-[1600px] px-6 py-10 grid gap-10 md:grid-cols-3">
         <div>
-          <div className="text-[15px] font-black mb-2">
-            Bharat Fintech<span className="accent"> Intelligence</span>
+          <div className="flex items-center gap-2.5 mb-2">
+            <BrandMark size={30} />
+            <span className="text-[15px] font-black">
+              Fintech<span className="accent"> Intelligence</span>
+            </span>
           </div>
           <p className="muted text-[12.5px] leading-relaxed">
-            An Indian capitals-markets India encyclopedia: equities, indices,
+            An Indian capital-markets encyclopedia: equities, indices,
             derivatives, IPOs, mutual funds, ETFs, bonds, metals, REITs and
             market pulses — facts, math and education, computed on our own
-            engine for free public sources.
+            engine.
           </p>
           <div className="mt-4">
             <DisclaimerBand />
@@ -59,8 +63,8 @@ export default function Footer() {
           </div>
           <p className="text-[13.5px] font-semibold">Kishlay Choudhary</p>
           <p className="muted text-[12.5px] mt-1 leading-relaxed">
-            Design, architecture and code — © {new Date().getFullYear()} Bharat
-            Fintech Intelligence. All rights reserved.
+            Design, architecture and code — © {new Date().getFullYear()} Fintech
+            Intelligence. All rights reserved.
           </p>
           <p
             className="blink-red text-[12px] font-extrabold mt-4"
@@ -74,8 +78,8 @@ export default function Footer() {
         className="border-t text-center py-3 muted text-[11.5px]"
         style={{ borderColor: "var(--line)" }}
       >
-        Free public sources: NSE · BSE · AMFI/mfapi.in · Yahoo Finance — end-of-day or delayed data.
-        &nbsp;F&amp;O Greeks computed platform-side.
+        Prices and analytics are computed platform-side. F&amp;O Greeks and
+        band math are generated on our own engine.
       </div>
     </footer>
   );

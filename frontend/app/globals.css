@@ -3,10 +3,10 @@
 @tailwind utilities;
 
 /* ==========================================================================
-   Bharat Fintech Intelligence — institutional terminal design system
-   Dark (default) is a deep-navy trading terminal. Light is a clean research
-   desk. Both themes share the same semantic variables, so every component
-   flips automatically.
+   Fintech Intelligence — institutional terminal design system
+   Dark (default) is a true-black trading terminal: 65% carbon black, 25%
+   graphite surfaces, 10% emerald / amber / crimson accents. Zero blue.
+   Light is a clean research desk. Both share the same semantic variables.
    ========================================================================== */
 
 :root {
@@ -19,50 +19,52 @@
   --line-soft: #E2E8F0;
   --ink: #0F172A;
   --muted: #475569;
-  --accent: #0284C7;
-  --accent-2: #2563EB;
+  --accent: #059669;
+  --accent-2: #D97706;
   --up: #059669;
   --down: #E11D48;
   --warn: #D97706;
   --stripe: #F8FAFC;
+  --canvas: #FFFFFF;
   --nav-bg: rgba(241, 245, 249, 0.92);
-  --btn-primary-from: #0284C7;
-  --btn-primary-to: #0369A1;
+  --btn-primary-from: #10B981;
+  --btn-primary-to: #059669;
   --btn-secondary-bg: #FFFFFF;
   --btn-secondary-ink: #0F172A;
   --btn-secondary-line: #CBD5E1;
   --tip-bg: #FFFFFF;
   --tip-line: #CBD5E1;
   --grid-line: rgba(15, 23, 42, 0.055);
-  --glow: rgba(2, 132, 199, 0.10);
+  --glow: rgba(16, 185, 129, 0.10);
 }
 
 .dark {
-  /* dark mode — deep-navy institutional terminal */
-  --bg: #060A12;
-  --surface: #0D1526;
-  --surface-2: #0A111E;
-  --hover: #131F36;
-  --line: #1E293B;
-  --line-soft: #16233A;
-  --ink: #F8FAFC;
-  --muted: #94A3B8;
-  --accent: #06B6D4;
-  --accent-2: #3B82F6;
+  /* dark mode — true black, zero blue: 3.0 : 1.5 : 0.8 ratio */
+  --bg: #09090B;          /* 65% dominant — pure carbon black */
+  --canvas: #050505;      /* deepest wells */
+  --surface: #121214;     /* 25% graphite cards */
+  --surface-2: #0B0B0D;
+  --hover: #18181B;       /* elevated hover */
+  --line: #27272A;        /* crisp neutral border */
+  --line-soft: #1F1F22;
+  --ink: #F4F4F5;         /* neutral zinc typography */
+  --muted: #A1A1AA;
+  --accent: #10B981;      /* 10% market emerald */
+  --accent-2: #F59E0B;    /* warm amber secondary */
   --up: #10B981;
   --down: #F43F5E;
   --warn: #F59E0B;
-  --stripe: #0F1A2E;
-  --nav-bg: rgba(6, 10, 18, 0.9);
-  --btn-primary-from: #0284C7;
-  --btn-primary-to: #06B6D4;
-  --btn-secondary-bg: #1E293B;
-  --btn-secondary-ink: #E2E8F0;
-  --btn-secondary-line: #334155;
-  --tip-bg: #0D1526;
-  --tip-line: #334155;
-  --grid-line: rgba(148, 163, 184, 0.055);
-  --glow: rgba(6, 182, 212, 0.14);
+  --stripe: #0F0F11;
+  --nav-bg: rgba(9, 9, 11, 0.9);
+  --btn-primary-from: #10B981;
+  --btn-primary-to: #059669;
+  --btn-secondary-bg: #18181B;
+  --btn-secondary-ink: #F4F4F5;
+  --btn-secondary-line: #27272A;
+  --tip-bg: #121214;
+  --tip-line: #27272A;
+  --grid-line: rgba(244, 244, 245, 0.045);
+  --glow: rgba(16, 185, 129, 0.12);
 }
 
 html { scroll-behavior: smooth; }

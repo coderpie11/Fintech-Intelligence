@@ -611,12 +611,17 @@ def seed_funds(db: Session) -> dict:
             rec.category = re.sub(r"\s*-\s*", " - ", rec.category).strip(" -")
     db.commit()
 
+    # AMFI carries a long tail of closed schemes, so roughly 60% of the picked
+    # codes return a fresh NAV series. The quotas are sized for an 800-code
+    # fetch to leave ~500 live schemes after the freshness filter.
     quotas = {
-        "Large Cap": 22, "Mid Cap": 22, "Small Cap": 22, "Flexi Cap": 22,
-        "ELSS": 14, "Nifty 50 Index": 10, "Sensex Index": 5, "Index Fund": 8,
-        "Debt": 14, "Liquid": 10, "Hybrid": 14, "Value Fund": 8,
-        "Focused": 6, "Large & Midcap": 8, "Balanced Advantage": 6,
-        "International": 5, "Gold Fund": 3, "Multi Asset": 4,
+        "Large Cap": 85, "Mid Cap": 85, "Small Cap": 85, "Flexi Cap": 85,
+        "ELSS": 45, "Nifty 50 Index": 30, "Sensex Index": 18, "Index Fund": 40,
+        "Debt": 70, "Debt - Gilt": 24, "Liquid": 40, "Overnight": 12,
+        "Hybrid": 55, "Value Fund": 24, "Focused": 18,
+        "Large & Midcap": 24, "Balanced Advantage": 18, "Equity Savings": 12,
+        "International": 30, "Gold Fund": 15, "Silver": 12, "Multi Asset": 15,
+        "Sectoral": 24,
     }
     # Prefer well-known AMCs, then fill by category.
     candidates = []
@@ -638,12 +643,12 @@ def seed_funds(db: Session) -> dict:
         if counts.get(cat, 0) >= quotas[cat]:
             continue
         amc = rows[code][2]
-        if per_amc.get(amc, 0) >= 16:
+        if per_amc.get(amc, 0) >= 22:
             continue
         picked.append((code, cat))
         counts[cat] = counts.get(cat, 0) + 1
         per_amc[amc] = per_amc.get(amc, 0) + 1
-        if len(picked) >= 190:
+        if len(picked) >= 800:
             break
 
     def fetch(item):
@@ -661,7 +666,9 @@ def seed_funds(db: Session) -> dict:
     # Groww slugs exist for a subset; fetch those pages in parallel. Everything
     # else gets an explicitly labelled category-benchmark model below.
     slug_map: dict[str, str] = {}
-    for code, _cat in picked:
+    # Groww page fetches are the slow part of the seed. The first 80 schemes
+    # get live enrichment; the rest use the explicitly labelled category model.
+    for code, _cat in picked[:80]:
         rec0 = db.get(FundScheme, code)
         slug = F.groww_slug(rec0.name) if rec0 else None
         if slug:
@@ -893,34 +900,36 @@ def seed_equity_fundamentals(db: Session, statement_limit: int | None = None) ->
     return stats
 
 
-def seed_etfs(db: Session) -> dict:
-    """Curated NSE ETF universe with live NSE snapshot + 5Y Yahoo history."""
-    stats = {"etfs": 0, "quotes": 0, "failed": []}
-    ter_map = {"NIFTYBEES": 0.04, "SETFNIF50": 0.05, "BANKBEES": 0.19,
-               "ITBEES": 0.22, "JUNIORBEES": 0.20, "GOLDBEES": 0.79,
-               "SILVERBEES": 0.79, "LIQUIDBEES": 0.29, "CPSEETF": 0.07,
-               "ICICIB22": 0.10, "MON100": 0.51, "MOM100": 0.30}
+def seed_etfs(db: Session, live: bool = True) -> dict:
+    """Curated NSE ETF universe with live NSE snapshot + 5Y Yahoo history.
+
+    ``live=False`` is the fast bootstrap path used by the app/tests: it still
+    writes every ETF row, but fills missing series from the deterministic
+    fallback in ``universe.py`` instead of waiting on 50 network calls.
+    """
+    stats = {"etfs": 0, "quotes": 0, "fallback": 0, "failed": []}
     try:
-        qmap = {str(r.get("symbol") or "").upper(): r for r in N.nse.etf_list()}
+        qmap = ({str(r.get("symbol") or "").upper(): r for r in N.nse.etf_list()}
+                if live else {})
     except Exception:  # noqa: BLE001
         qmap = {}
     for spec in U.ETF_UNIVERSE:
         sym = spec["symbol"]
-        hist = _yahoo_history(f"{sym}.NS")
+        hist = _yahoo_history(f"{sym}.NS") if live else []
         if not hist:
-            stats["failed"].append(f"{sym} history")
-            continue
+            hist = U.fallback_history(spec)
+            stats["fallback"] += 1
         q = qmap.get(sym) or {}
         last, prev = hist[-1], hist[-2] if len(hist) > 1 else hist[-1]
+        fb = spec.get("fallback") or {}
         nav = q.get("nav")
         nav_source = "NSE published NAV"
         if nav in (None, "", 0):
-            # SETFNIF50 is not in NSE's ETF snapshot; its latest close is the
-            # honest NAV proxy, explicitly labelled.
-            nav = last["c"]
-            nav_source = "Latest close (NSE NAV unavailable)"
+            nav = fb.get("nav") or last["c"]
+            nav_source = ("Modelled fallback NAV" if not q
+                          else "Latest close (NSE NAV unavailable)")
         meta = {
-            "lastPrice": q.get("ltP") or last["c"],
+            "lastPrice": q.get("ltP") or fb.get("price") or last["c"],
             "prevClose": q.get("prevClose") or prev["c"],
             "changepct": (float(q.get("per")) if q.get("per") not in (None, "")
                           else round((last["c"] / prev["c"] - 1) * 100, 2)),
@@ -928,17 +937,20 @@ def seed_etfs(db: Session) -> dict:
             "high": q.get("high") or last.get("h"),
             "low": q.get("low") or last.get("l"),
             "nav": nav, "nav_source": nav_source,
-            "ter_pct": ter_map.get(sym),
-            "week52_high": q.get("wkhi"),
-            "week52_low": q.get("wklo"),
-            "volume": q.get("qty"),
+            "ter_pct": spec.get("ter_pct"),
+            "returns": fb.get("returns"),
+            "tracking_error_pct": fb.get("tracking_error_pct"),
+            "week52_high": q.get("wkhi") or max(h["c"] for h in hist[-252:]),
+            "week52_low": q.get("wklo") or min(h["c"] for h in hist[-252:]),
+            "volume": q.get("qty") or last.get("v"),
             "turnover": q.get("trdVal"),
             "category": spec["category"],
             "benchmark": spec.get("benchmark"),
             "issuer": spec.get("issuer"),
             "about": spec.get("about"),
             "asof": hist[-1]["date"],
-            "live_source": "NSE /api/etf" if q else "Yahoo Finance EOD",
+            "live_source": ("NSE /api/etf" if q else
+                            ("Modelled fallback" if not live else "Yahoo Finance EOD")),
         }
         upsert_instrument(db, symbol=sym, name=spec["name"], kind="ETF",
                           sector=spec["category"], meta=meta, history=hist)

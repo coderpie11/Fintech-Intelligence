@@ -19,7 +19,7 @@ export type ChartPoint = {
   time?: string;
   datetime?: string;
   volume?: number;
-  // Raw Yahoo candle fields are accepted too, so pages can pass the payload
+  // Raw market candle fields are accepted too, so pages can pass the payload
   // straight through without a mapping layer.
   c?: number;
   o?: number;
@@ -217,7 +217,7 @@ export default function LineChart({
   const active = hover ?? pinned;
   const activePoint = active != null ? visible[active] : null;
 
-  // Publish the scrubbed candle to the page header (Groww/TradingView style).
+  // Publish the scrubbed candle to the page header (terminal style).
   const hoverPoint = activePoint;
   useEffect(() => {
     if (!onHoverPointChange) return;
@@ -315,21 +315,12 @@ export default function LineChart({
   const candleW = Math.max(1, ((W - pad.l - pad.r) / visible.length) * 0.62);
   const showWicks = candleW >= 1.6;
 
-  const dailyFallback = liveIntraday &&
-    /daily/i.test(intradaySource || "") && distinctTimes.size <= 1;
-
   return (
     <div className="w-full">
       {/* ---- pinned header: metrics left, controls top-right ---- */}
       <div className="flex items-start justify-between gap-4 mb-3">
         <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 min-w-0 flex-1">
           {title && <div className="text-[13px] font-bold tracking-tight">{title}</div>}
-          <div>
-            <div className="muted text-[10px] font-bold uppercase tracking-[0.14em]">Period return</div>
-            <div className={`knum text-[18px] font-black ${positive ? "text-up" : "text-down"}`}>
-              {pct(periodReturn)}
-            </div>
-          </div>
           <div>
             <div className="muted text-[10px] font-bold uppercase tracking-[0.14em]">Period high</div>
             <div className="knum text-[13.5px] font-bold">{val(hi)}</div>
@@ -338,13 +329,6 @@ export default function LineChart({
             <div className="muted text-[10px] font-bold uppercase tracking-[0.14em]">Period low</div>
             <div className="knum text-[13.5px] font-bold">{val(lo)}</div>
           </div>
-          {liveIntraday && (
-            <span className={`chip !text-[9.5px] ${dailyFallback ? "chip-warn" : ""}`}>
-              {dailyFallback
-                ? "Latest stored sessions · daily candles"
-                : `${intradaySource || "Live session"} · 09:15–15:30 IST`}
-            </span>
-          )}
         </div>
 
         <div className="ml-auto shrink-0 flex items-center gap-2">

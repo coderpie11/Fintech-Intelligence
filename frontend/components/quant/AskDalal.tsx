@@ -3,17 +3,18 @@
 import { useEffect, useState } from "react";
 import { getJSON, postJSON } from "@/lib/api";
 import { inr } from "@/lib/format";
-import { Bar, ErrLine, Loading, Metric, Note, Panel, Pill, num, signed } from "./Kit";
+import DynamicLoader from "@/components/DynamicLoader";
+import { ErrLine, Metric, Note, Panel, Pill, num, signed } from "./Kit";
 
 type AskResponse = { intent: string; data: any };
 
 const EXAMPLES: { label: string; question: string; symbol: string }[] = [
-  { label: "Bank screener", question: "banks with ROE above 15 and PE below 20", symbol: "" },
+  { label: "Research note", question: "What are the expectations for Paras Defence share in 1 month?", symbol: "" },
   { label: "Single stock", question: "show me RELIANCE", symbol: "RELIANCE" },
+  { label: "Stock screen", question: "banks with ROE above 15 and PE below 20", symbol: "" },
   { label: "Grounded filing Q&A", question: "What did the company report for revenue and cash flow from operations?", symbol: "RELIANCE" },
   { label: "Say-vs-Do", question: "Did management walk the talk on its guidance?", symbol: "SBIN" },
   { label: "Filing diff", question: "What changed in the annual statement year over year?", symbol: "RELIANCE" },
-  { label: "Dividend screen", question: "companies with dividend yield above 2", symbol: "" },
 ];
 
 const STATUS_TONE: Record<string, "up" | "down" | "warn" | "neutral"> = {
@@ -24,49 +25,63 @@ const STATUS_TONE: Record<string, "up" | "down" | "warn" | "neutral"> = {
 };
 
 function ScreenerResult({ d }: { d: any }) {
+  const matches: any[] = d.matches || [];
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <Pill tone={d.mode === "llm" ? "accent" : "neutral"}>
-          {d.mode === "llm" ? "LLM-generated SQL" : "Deterministic SQL"}
-        </Pill>
-        <span className="muted text-[11px]">{num(d.row_count, 0)} rows</span>
-        {d.llm?.provider && <span className="muted text-[11px]">· answered by {d.llm.provider} / {d.llm.model}</span>}
+        <Pill tone="accent">{num(d.row_count, 0)} matches</Pill>
         {d.error && <Pill tone="down">{d.error}</Pill>}
       </div>
-      <pre className="rounded-lg p-3 text-[11px] overflow-x-auto knum"
-           style={{ background: "var(--surface-2)", border: "1px solid var(--line)", color: "var(--accent)" }}>
-        {d.sql}
-      </pre>
-      {(d.rows || []).length > 0 ? (
-        <div className="overflow-x-auto rounded-lg" style={{ border: "1px solid var(--line)" }}>
-          <table className="w-full min-w-[720px] border-collapse">
-            <thead>
-              <tr style={{ background: "var(--surface-2)" }}>
-                {(d.columns || []).map((c: string) => (
-                  <th key={c} className="table-head px-3 py-2 text-left whitespace-nowrap">{c.replace(/_/g, " ")}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {(d.rows || []).map((row: any[], i: number) => (
-                <tr key={i} className="table-row">
-                  {row.map((cell, j) => (
-                    <td key={j} className="px-3 py-2 knum text-[11.5px] whitespace-nowrap">
-                      {typeof cell === "number"
-                        ? (d.columns[j] === "market_cap" ? inr(cell, 0) : num(cell, 2))
-                        : String(cell ?? "—")}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {matches.length > 0 ? (
+        <div className="grid sm:grid-cols-2 gap-2">
+          {matches.map((m: any, i: number) => (
+            <div key={`${m.symbol || i}`} className="rounded-lg px-3 py-2.5"
+                 style={{ border: "1px solid var(--line)", background: "var(--surface-2)" }}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[12.5px] font-bold">{m.name || m.symbol}</span>
+                <span className="knum text-[11px] muted">{m.symbol}</span>
+              </div>
+              <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1 text-[11px]">
+                <span>Price <b className="knum">{inr(m.last_price)}</b></span>
+                <span>P/E <b className="knum">{num(m.pe, 1)}</b></span>
+                <span>ROE <b className="knum">{num(m.roe, 1)}%</b></span>
+                <span className="muted">{m.sector || "—"}</span>
+              </div>
+            </div>
+          ))}
         </div>
       ) : (
-        <p className="muted text-[12px]">No rows matched. The SQL is shown above so the filter can be checked, not guessed at.</p>
+        <p className="muted text-[12px]">No companies matched that screen. Try a wider threshold or a sector name.</p>
       )}
-      <Note>{d.guard}</Note>
+      <Note>{d.note}</Note>
+    </div>
+  );
+}
+
+function ResearchNoteResult({ d }: { d: any }) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Pill tone="accent">{d.symbol}</Pill>
+        <span className="text-[13px] font-bold">{d.name}</span>
+        {d.sector && <span className="muted text-[11px]">{d.sector}</span>}
+        {d.asof && <span className="muted text-[11px] ml-auto">Data as of {d.asof}</span>}
+      </div>
+      <div className="space-y-2.5">
+        {(d.sections || []).map((s: any, i: number) => (
+          <div key={`${s.title}-${i}`} className="rounded-lg p-3.5"
+               style={{ border: "1px solid var(--line)", background: "var(--surface-2)" }}>
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-[15px]">{s.icon}</span>
+              <span className="text-[12.5px] font-extrabold">{s.title}</span>
+            </div>
+            <p className="text-[12.5px] leading-relaxed whitespace-pre-line" style={{ color: "var(--ink)" }}>
+              {s.body}
+            </p>
+          </div>
+        ))}
+      </div>
+      <Note>{d.note}</Note>
     </div>
   );
 }
@@ -76,9 +91,9 @@ function DocumentsResult({ d }: { d: any }) {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <Pill tone={d.llm?.used ? "accent" : "neutral"}>
-          {d.llm?.used ? `LLM answer · ${d.llm.provider}` : "Extractive answer"}
+          {d.llm?.used ? "Grounded answer" : "Extractive answer"}
         </Pill>
-        <Pill tone={d.dense ? "up" : "warn"}>{d.dense ? "Dense + lexical retrieval" : "Lexical retrieval"}</Pill>
+        <Pill tone={d.dense ? "up" : "warn"}>{d.dense ? "Semantic + lexical retrieval" : "Lexical retrieval"}</Pill>
         {d.scanned != null && <span className="muted text-[11px]">{num(d.scanned, 0)} chunks scanned</span>}
       </div>
       {d.answer ? (
@@ -112,7 +127,7 @@ function DocumentsResult({ d }: { d: any }) {
           ))}
         </div>
       )}
-      {d.llm?.error && <Note>LLM unavailable, so the passages were returned verbatim: {d.llm.error}</Note>}
+      {d.llm?.error && <Note>The answer model was unavailable, so the passages were returned verbatim.</Note>}
     </div>
   );
 }
@@ -263,10 +278,33 @@ export default function AskDalal() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [corpus, setCorpus] = useState<any>(null);
+  const [status, setStatus] = useState("");
 
   useEffect(() => {
     getJSON("/quant-hub/ask-dalal/corpus").then(setCorpus).catch(() => {});
   }, []);
+
+  // Rotating status lines make the research-note wait legible.
+  useEffect(() => {
+    if (!busy) {
+      setStatus("");
+      return;
+    }
+    const lines = [
+      "Resolving the company…",
+      "Reading the live quote and fundamentals…",
+      "Checking promoter, FII and DII holdings…",
+      "Comparing valuation with the sector…",
+      "Writing the five-section note…",
+    ];
+    let i = 0;
+    setStatus(lines[0]);
+    const id = window.setInterval(() => {
+      i = (i + 1) % lines.length;
+      setStatus(lines[i]);
+    }, 1200);
+    return () => window.clearInterval(id);
+  }, [busy]);
 
   const ask = async (q = question, sym = symbol) => {
     if (!q.trim()) return;
@@ -289,8 +327,8 @@ export default function AskDalal() {
   return (
     <div className="space-y-3">
       <Panel
-        title="Ask Dalal AI — guarded data questions"
-        sub="A text-to-SQL screener over read-only views, a grounded document answerer, a CEO say-vs-do tracker and a filing diff. Every answer shows its SQL, its sources or its score logic — no hidden model opinion."
+        title="Ask Dalal AI — institutional research notes"
+        sub="Ask about any listed company by ticker or name. Dalal resolves it, reads the quote, fundamentals and shareholding, and writes a clean five-section research note. Filing Q&A, the say-vs-do ledger and filing diffs are here too — never a SQL dump."
       >
         <div className="space-y-2">
           <textarea
@@ -298,20 +336,20 @@ export default function AskDalal() {
             onChange={(e) => setQuestion(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ask(); }}
             rows={2}
-            placeholder="e.g. banks with ROE above 15 and PE below 20"
+            placeholder="e.g. What are the expectations for Paras Defence share in 1 month?"
             className="surface rounded-lg px-3 py-2.5 w-full text-[13px] resize-y"
             style={{ color: "var(--ink)" }}
           />
           <div className="flex flex-wrap items-center gap-2">
             <label className="block">
-              <span className="muted text-[9.5px] font-bold uppercase tracking-[0.13em] block mb-1">Symbol (for filing / say-vs-do)</span>
+              <span className="muted text-[9.5px] font-bold uppercase tracking-[0.13em] block mb-1">Symbol (optional — name works too)</span>
               <input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-                     placeholder="RELIANCE"
+                     placeholder="PARAS / RELIANCE"
                      className="surface rounded-lg px-3 py-2 knum w-40 text-[12.5px]" style={{ color: "var(--ink)" }} />
             </label>
             <label className="flex items-center gap-2 text-[11.5px] muted mt-4">
               <input type="checkbox" checked={preferLlm} onChange={(e) => setPreferLlm(e.target.checked)} />
-              Use the LLM tier when it is available
+              Use AI narration when available
             </label>
             <button onClick={() => ask()} disabled={busy} className="btn-primary !py-2 !text-[12.5px] ml-auto mt-4">
               {busy ? "Thinking…" : "Ask Dalal"}
@@ -333,25 +371,34 @@ export default function AskDalal() {
             <Pill tone={corpus.embedded_chunks > 0 ? "up" : "warn"}>
               {corpus.embedded_chunks > 0 ? `${num(corpus.embedded_chunks, 0)} embedded` : "lexical only"}
             </Pill>
-            <Pill>{corpus.encoder?.state || "encoder idle"}</Pill>
-            {corpus.encoder?.state === "ready" && <span className="muted text-[10.5px]">{corpus.encoder.dim}-d · {corpus.encoder.engine}</span>}
+            <Pill>{corpus.encoder?.state === "ready" ? "semantic index ready" : "lexical index"}</Pill>
           </div>
         )}
       </Panel>
 
       {err && <ErrLine message={`Ask Dalal could not answer: ${err}`} onRetry={() => ask()} />}
-      {busy && <Loading label="Routing the question, then running the guard…" />}
+      {busy && (
+        <div className="card p-4">
+          <DynamicLoader
+            size={40}
+            label="Building the research note…"
+            status={status || "Resolving the company…"}
+          />
+        </div>
+      )}
 
       {res && (
         <Panel
           title={
-            res.intent === "screener" ? "Screener result" :
+            res.intent === "research" ? `${res.data?.symbol || "Company"} — Institutional research note` :
+            res.intent === "screener" ? "Stock screen result" :
             res.intent === "documents" ? "Grounded document answer" :
             res.intent === "credibility" ? `${res.data?.symbol || "Company"} — Say-vs-Do ledger` :
             `${res.data?.symbol || "Company"} — filing diff`
           }
           right={<Pill tone="accent">{res.intent}</Pill>}
         >
+          {res.intent === "research" && <ResearchNoteResult d={res.data} />}
           {res.intent === "screener" && <ScreenerResult d={res.data} />}
           {res.intent === "documents" && <DocumentsResult d={res.data} />}
           {res.intent === "credibility" && <CredibilityResult d={res.data} />}

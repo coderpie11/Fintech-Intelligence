@@ -45,6 +45,17 @@ def cagr(begin: float, end: float, years: float) -> float | None:
     return round(((end / begin) ** (1 / years) - 1) * 100, 2)
 
 
+def metal_units(amount: float, price: float, load_pct: float = 0.0) -> float:
+    """Grams (or units) of a metal bought for a rupee amount.
+
+    ``load_pct`` bundles making charges and GST so the buyer's total outlay is
+    exactly ``amount``; a zero load means the full amount buys metal at spot.
+    """
+    if amount <= 0 or price <= 0:
+        return 0.0
+    return amount / (price * (1 + max(load_pct, 0.0) / 100))
+
+
 def simple_returns(closes: list[float]) -> list[float]:
     return [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes))]
 

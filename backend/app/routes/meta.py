@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.config import FREE_SOURCE_NOTE
+from app.core.config import FREE_SOURCE_NOTE, cache_get
 from app.core.db import get_db, SessionLocal
 from app.models.models import Instrument, SeedState
 from app.data.adapters import nse_adapter as N
@@ -19,7 +19,7 @@ router = APIRouter(tags=["system"])
 
 @router.get("/health")
 def health():
-    return {"status": "ok", "service": "Bharat Fintech Intelligence API", "version": "1.0.0"}
+    return {"status": "ok", "service": "Fintech Intelligence API", "version": "1.0.0"}
 
 
 @router.get("/search")
@@ -134,6 +134,161 @@ def search(q: str, limit: int = 12, db: Session = Depends(get_db)):
     return {"query": q, "results": results, "count": len(results)}
 
 
+# ---------------------------------------------------------------- preload -----
+# The navbar pulls this once per browser session and filters it client-side.
+# Build it in RAM and reuse for five minutes so the endpoint answers in <5 ms.
+_PRELOAD_CACHE: dict = {"at": 0.0, "payload": None}
+
+
+def _build_preload(db: Session) -> dict:
+    import math
+    import time as _t
+
+    from app.models.models import FundScheme, Ipo
+    from app.routes import academy as A
+    from app.routes.ipos import slugify
+
+    def _num(v):
+        """Stored snapshots occasionally hold NaN/Infinity, which JSON cannot
+        serialise. Normalise every numeric field to a finite float or None."""
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return f if math.isfinite(f) else None
+
+    items: list[dict] = []
+
+    # ---------------------------------------------------------- instruments
+    for r in (db.query(Instrument)
+                .filter(Instrument.kind.in_(
+                    ("EQUITY", "INDEX", "ETF", "REIT", "INVIT", "COMMODITY")))
+                .all()):
+        m = r.meta or {}
+        price = m.get("lastPrice")
+        items.append({
+            "kind": r.kind,
+            "symbol": r.symbol,
+            "name": r.name,
+            "label": r.symbol,
+            "sublabel": r.name,
+            "sector": r.sector,
+            "exchange": r.exchange,
+            "changepct": _num(m.get("changepct")),
+            "price": _num(price),
+            "unit": "₹" if r.kind in ("EQUITY", "ETF", "REIT", "INVIT") else None,
+            "href": stock_href(r),
+            "aliases": " ".join(x for x in (r.industry, r.macro) if x),
+        })
+
+    # ----------------------------------------------------------------- IPOs
+    try:
+        for i in db.query(Ipo).all():
+            m = i.meta or {}
+            gmp = _num(m.get("gmp"))
+            items.append({
+                "kind": "IPO",
+                "symbol": i.symbol or "",
+                "name": i.name,
+                "label": i.name[:80],
+                "sublabel": (f"IPO · {i.board.title()} · {i.status.title()}"
+                             + (f" · GMP ₹{gmp:g}" if isinstance(gmp, (int, float)) else "")),
+                "sector": None,
+                "changepct": None,
+                "price": _num(m.get("listed_price")) if i.status == "LISTED" else None,
+                "unit": "₹" if i.status == "LISTED" else None,
+                "href": f"/ipos/{slugify(i.name)}",
+                "aliases": f"{i.board} {i.status} ipo",
+            })
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ----------------------------------------------------------- mutual funds
+    # Always include the category representatives (silver, gold, Nasdaq/US,
+    # index, ELSS, debt) first, then fill up to 500 direct-growth plans so the
+    # dropdown covers the long tail and the category tabs stay populated.
+    try:
+        navmap = cache_get("mfapi:latestmap") or {}
+        picked: dict[str, FundScheme] = {}
+        for term in ("silver", "gold", "nasdaq", "s&p 500", "nifty", "sensex",
+                     "index", "us equity", "international", "elss", "tax saver",
+                     "large cap", "mid cap", "small cap", "flexi cap",
+                     "hybrid", "balanced", "debt", "liquid", "gilt"):
+            for f in (db.query(FundScheme)
+                        .filter(FundScheme.name.ilike(f"%{term}%"))
+                        .limit(40).all()):
+                picked.setdefault(str(f.code), f)
+        for f in (db.query(FundScheme)
+                    .filter(FundScheme.plan_type == "Direct",
+                            FundScheme.option_type == "Growth")
+                    .order_by(FundScheme.name).limit(500).all()):
+            if len(picked) >= 500:
+                break
+            picked.setdefault(str(f.code), f)
+        for f in list(picked.values())[:500]:
+            nav = _num(navmap.get(str(f.code)))
+            items.append({
+                "kind": "FUND",
+                "symbol": str(f.code),
+                "name": f.name,
+                "label": f.name[:90],
+                "sublabel": f"{f.amc} · {f.category or 'Mutual fund'}",
+                "sector": f.category,
+                "changepct": None,
+                "price": nav,
+                "nav": nav,
+                "unit": "₹",
+                "href": f"/mutual-funds/{f.code}",
+                "aliases": f"{f.amc} {f.category or ''} {f.plan_type or ''}",
+            })
+    except Exception:  # noqa: BLE001
+        pass
+
+    # --------------------------------------------------------------- academy
+    try:
+        alias_by_id: dict[str, list[str]] = {}
+        for alias, lesson_id in A.ALIASES.items():
+            alias_by_id.setdefault(lesson_id, []).append(alias)
+        for tid, track, item in A._all_lessons():
+            items.append({
+                "kind": "ACADEMY",
+                "symbol": item["id"],
+                "name": item["title"],
+                "label": item["title"][:80],
+                "sublabel": f"Academy · {track['title']}",
+                "sector": None,
+                "changepct": None,
+                "price": None,
+                "unit": None,
+                "href": f"/learn/{tid}?topic={item['id']}",
+                "aliases": " ".join(alias_by_id.get(item["id"], [])),
+            })
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {
+        "count": len(items),
+        "built_at": _t.strftime("%Y-%m-%dT%H:%M:%S"),
+        "items": items,
+    }
+
+
+@router.get("/search/preload")
+def search_preload(db: Session = Depends(get_db)):
+    """Compact client-side search index: equities, indices, IPOs, ETFs, funds,
+    academy topics. Cached in process RAM for five minutes."""
+    import time as _t
+
+    now = _t.time()
+    cached = _PRELOAD_CACHE.get("payload")
+    if cached is not None and now - float(_PRELOAD_CACHE.get("at") or 0) < 300:
+        return cached
+    payload = _build_preload(db)
+    _PRELOAD_CACHE["at"] = now
+    _PRELOAD_CACHE["payload"] = payload
+    return payload
+
+
 def stock_href(r: Instrument) -> str:
     from app.seed.universe import INDICES
     if r.kind == "INDEX":
@@ -240,3 +395,4 @@ def seed_state(db: Session = Depends(get_db)):
     rows = db.query(SeedState).all()
     return {r.key: {"value": r.value, "at": r.updated_at.isoformat() if r.updated_at else None}
             for r in rows}
+

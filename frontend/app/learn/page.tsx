@@ -6,6 +6,7 @@ import { getJSON, postJSON } from "@/lib/api";
 import { ErrorBox, PageHeader, Skeleton } from "@/components/PageKit";
 import { Pill } from "@/components/quant/Kit";
 import MetricTip from "@/components/MetricTip";
+import DynamicLoader from "@/components/DynamicLoader";
 import { LessonBody, type Lesson } from "@/components/LessonCards";
 
 type Track = {
@@ -62,9 +63,32 @@ export default function LearnPage() {
   const [aiBusy, setAiBusy] = useState(false);
   const [aiErr, setAiErr] = useState<string | null>(null);
   const [aiMeta, setAiMeta] = useState<{ source: string; latency: number } | null>(null);
+  const [aiStatus, setAiStatus] = useState("");
 
   const seq = useRef(0);
   const autoRef = useRef<string>("");
+
+  // Rotating status lines keep the AI wait legible without naming providers.
+  useEffect(() => {
+    if (!aiBusy) {
+      setAiStatus("");
+      return;
+    }
+    const phrases = [
+      "Reading the term…",
+      "Finding a dukaan analogy…",
+      "Writing the ₹1,000 example…",
+      "Checking the thumb rule…",
+      "Polishing the five cards…",
+    ];
+    let i = 0;
+    setAiStatus(phrases[0]);
+    const id = window.setInterval(() => {
+      i = (i + 1) % phrases.length;
+      setAiStatus(phrases[i]);
+    }, 1400);
+    return () => window.clearInterval(id);
+  }, [aiBusy]);
 
   useEffect(() => {
     getJSON("/academy")
@@ -102,9 +126,38 @@ export default function LearnPage() {
     }
   };
 
+  // Shared search runner: the debounce path and the visible Search button both
+  // call this. A zero-match query auto-triggers the AI lesson after 600 ms.
+  const runSearch = (text: string) => {
+    const mine = ++seq.current;
+    setSearching(true);
+    getJSON(`/academy/search?q=${encodeURIComponent(text)}`)
+      .then((d) => {
+        if (seq.current !== mine) return;
+        setHits(d.lessons || []);
+        setTopLesson(d.top_lesson || null);
+        setAiSuggest(d.ai_suggest || null);
+        if (d.cached_topic) {
+          setAi(d.cached_topic);
+          setAiMeta({ source: "cache", latency: 0 });
+        } else if (d.ai_suggest?.auto_generate && autoRef.current !== text) {
+          autoRef.current = text;
+          window.setTimeout(() => generate(text), 600);
+        }
+      })
+      .catch(() => {
+        if (seq.current === mine) {
+          setHits([]);
+          setTopLesson(null);
+        }
+      })
+      .finally(() => {
+        if (seq.current === mine) setSearching(false);
+      });
+  };
+
   // Debounced beginner search. Typing “pe”, “rent” or “sip” should find a
-  // topic even if the reader does not know the technical name. A zero-match
-  // query auto-triggers the AI lesson after 600 ms.
+  // topic even if the reader does not know the technical name.
   useEffect(() => {
     const text = q.trim();
     if (text.length < 2) {
@@ -121,32 +174,7 @@ export default function LearnPage() {
     setAi(null);
     setAiErr(null);
     setAiMeta(null);
-    const id = window.setTimeout(() => {
-      const mine = ++seq.current;
-      getJSON(`/academy/search?q=${encodeURIComponent(text)}`)
-        .then((d) => {
-          if (seq.current !== mine) return;
-          setHits(d.lessons || []);
-          setTopLesson(d.top_lesson || null);
-          setAiSuggest(d.ai_suggest || null);
-          if (d.cached_topic) {
-            setAi(d.cached_topic);
-            setAiMeta({ source: "cache", latency: 0 });
-          } else if (d.ai_suggest?.auto_generate && autoRef.current !== text) {
-            autoRef.current = text;
-            window.setTimeout(() => generate(text), 600);
-          }
-        })
-        .catch(() => {
-          if (seq.current === mine) {
-            setHits([]);
-            setTopLesson(null);
-          }
-        })
-        .finally(() => {
-          if (seq.current === mine) setSearching(false);
-        });
-    }, 220);
+    const id = window.setTimeout(() => runSearch(text), 220);
     return () => window.clearTimeout(id);
   }, [q]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -160,6 +188,14 @@ export default function LearnPage() {
   const shown = (tracks || []).filter((t) => asset === "All" || t.asset === asset);
   const searchMode = q.trim().length >= 2;
   const query = q.trim();
+
+  // Visible Search button / Enter key: run the lookup immediately, bypassing
+  // the 220 ms typing debounce.
+  const submit = () => {
+    if (query.length < 1) return;
+    autoRef.current = "";
+    runSearch(query);
+  };
 
   return (
     <div className="mx-auto max-w-[1400px] px-4 sm:px-6 pb-16">
@@ -213,6 +249,12 @@ export default function LearnPage() {
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
               placeholder="Try “P/E”, “profit to book value”, “upper circuit”, “SIP”…"
               className="w-full rounded-lg px-3 py-2.5 text-[13px] outline-none"
               style={{ border: "1px solid var(--line)", background: "var(--surface-2)" }}
@@ -222,12 +264,39 @@ export default function LearnPage() {
                 Clear
               </button>
             )}
+            <button
+              onClick={submit}
+              disabled={!query}
+              className="btn-primary !px-3.5 !py-2.5 !text-[12px] shrink-0"
+              title="Search the Academy (or press Enter)"
+            >
+              Search →
+            </button>
           </div>
         </label>
 
+        {/* instant autocomplete suggestions */}
+        {searchMode && !searching && hits && hits.length > 0 && (
+          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+            <span className="muted text-[10px] font-bold uppercase tracking-[0.14em] mr-0.5">
+              Suggestions
+            </span>
+            {hits.slice(0, 5).map((h) => (
+              <button
+                key={`${h.track_id}-${h.id}`}
+                onClick={() => setQ(h.title)}
+                className="chip !text-[10px] !normal-case hover:!text-[var(--ink)]"
+                title={h.one_liner}
+              >
+                {h.title}
+              </button>
+            ))}
+          </div>
+        )}
+
         {searchMode && (
           <div className="mt-3">
-            {searching && <p className="muted text-[12px]">Searching topics…</p>}
+            {searching && <DynamicLoader size={26} status="Searching topics…" className="mb-2" />}
 
             {!searching && topLesson && (
               <div className="mb-3">
@@ -288,14 +357,13 @@ export default function LearnPage() {
 
               {aiBusy && (
                 <div className="card p-4">
-                  <div className="flex items-center gap-2">
-                    <span className="chip chip-warn !text-[10px]">AI teacher</span>
-                    <span className="text-[12.5px] font-semibold">
-                      Building a five-card lesson for “{query}”…
-                    </span>
-                  </div>
-                  <p className="muted text-[11px] mt-1">
-                    Gemini → Groq → OpenRouter. The answer is cached, so the next search opens instantly.
+                  <DynamicLoader
+                    size={44}
+                    label={`Building a five-card lesson for “${query}”`}
+                    status={aiStatus || "Reading the term…"}
+                  />
+                  <p className="muted text-[11px] mt-2">
+                    The lesson is cached after the first run, so the next search opens instantly.
                   </p>
                 </div>
               )}

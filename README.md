@@ -1,4 +1,4 @@
-# Bharat Fintech Intelligence
+# Fintech Intelligence
 
 India's facts-first market database — equities, indices, F&O chains, IPOs,
 mutual funds, ETFs, bonds, gold & silver, corporate events, REITs/InvITs,
@@ -70,4 +70,4 @@ nightly 18:30 IST scheduler re-runs stages. Seeding is resumable & idempotent.
 > not a buy/sell recommendation, and the operators are not SEBI-registered
 > advisers. Consult a registered adviser before any real decision.**
 
-© Kishlay Choudhary — Bharat Fintech Intelligence.
+© Kishlay Choudhary — Fintech Intelligence.

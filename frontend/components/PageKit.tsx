@@ -5,6 +5,7 @@ import { useState } from "react";
 import { postJSON } from "@/lib/api";
 import EnvVal, { PctVal } from "./EnvVal";
 import MetricTip, { type Tip } from "./MetricTip";
+import DynamicLoader from "./DynamicLoader";
 import type { Env } from "@/lib/api";
 import { bigCrude, fmtDate, inr, pct } from "@/lib/format";
 
@@ -97,12 +98,35 @@ export function RefreshButton({ stage, label = "Refresh" }: { stage: string; lab
   );
 }
 
-export function Skeleton({ rows = 6 }: { rows?: number }) {
+export function Skeleton({ rows = 6, label }: { rows?: number; label?: string }) {
   return (
     <div className="space-y-2" aria-busy="true">
+      <div className="card p-3.5 mb-2.5">
+        <DynamicLoader size={36} label={label || "Loading desk"} status="Fetching the latest snapshot…" />
+      </div>
       {Array.from({ length: rows }).map((_, i) => (
         <div key={i} className="skeleton h-11" />
       ))}
+    </div>
+  );
+}
+
+/** Standard page-level loading block: animated mark + skeleton rows. */
+export function LoadingBlock({
+  label = "Loading",
+  status = "Warming the engine…",
+  rows = 4,
+}: {
+  label?: string;
+  status?: string;
+  rows?: number;
+}) {
+  return (
+    <div className="card p-5">
+      <DynamicLoader size={44} label={label} status={status} />
+      <div className="mt-4">
+        <Skeleton rows={rows} />
+      </div>
     </div>
   );
 }

@@ -117,10 +117,27 @@ const TIPS: Record<string, Tip> = {
     formula: "Expected move ≈ Spot × (VIX ÷ 100) × √(T ÷ 252)",
     example: "NIFTY 23,000 with VIX 15 gives a 1-month 1σ move of about ±990 points.",
   },
+  bet: { meaning: "Call (CE) is a tezi / upside bet. Put (PE) is a mandi / downside-protection bet." },
+  strike: { meaning: "Woh level jahan aap shart/contract laga rahe ho — the price at which the option becomes valuable at expiry." },
+  lots: { meaning: "How many market lots you are buying. One lot already contains the exchange's fixed number of units." },
+  lotSize: { meaning: "Units inside one lot. NIFTY is 75 units per lot; the exchange sets this and it changes from time to time." },
+  premium: { meaning: "The price you actually paid per unit for the option. This is your maximum loss if the option expires worthless." },
+  entryTime: { meaning: "The time you entered the trade. Time decay is charged from this moment." },
+  move: { meaning: "How much you expect the underlying to move from here. Positive means up, negative means down." },
+  horizon: { meaning: "How long you plan to hold the option before checking the result." },
+  ivShift: { meaning: "How much market fear (IV) changes. Positive means options get costlier; negative means they get cheaper." },
 };
 
 function envNum<T = number>(e?: Env<T>): T | null {
   return e && e.value != null ? e.value : null;
+}
+
+function Lbl({ label, tip }: { label: string; tip?: Tip }) {
+  return (
+    <span className="muted text-[10px] font-bold uppercase tracking-wider">
+      {tip ? <MetricTip label={label} tip={tip}>{label}</MetricTip> : label}
+    </span>
+  );
 }
 
 function fmtOI(n?: number | null): string {
@@ -184,6 +201,7 @@ export default function FnoTab({ underlying }: { underlying: string }) {
   const [err, setErr] = useState<string | null>(null);
   const [exp, setExp] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [cols, setCols] = useState({ chgOi: false, iv: false, pop: false, greeks: false });
   const scrollRef = useRef<HTMLDivElement>(null);
   const atmRef = useRef<HTMLTableRowElement>(null);
 
@@ -258,6 +276,31 @@ export default function FnoTab({ underlying }: { underlying: string }) {
     if (idx < 0) return rows;
     return rows.slice(Math.max(0, idx - 10), idx + 11);
   }, [rows, atm, showAll]);
+
+  // Simple view keeps only the three core columns on each side. The filter
+  // dropdown adds ΔOI, IV, POP and the full Greek set on demand.
+  const anyExtra = cols.chgOi || cols.iv || cols.pop || cols.greeks;
+  const callCols = useMemo(() => {
+    const c = ["oi"];
+    if (cols.chgOi) c.push("chgOi");
+    c.push("vol");
+    if (cols.iv) c.push("iv");
+    c.push("ltp");
+    if (cols.greeks) c.push("delta", "gamma", "theta", "vega");
+    if (cols.pop) c.push("pop");
+    return c;
+  }, [cols]);
+  const putCols = useMemo(() => {
+    const c: string[] = [];
+    if (cols.pop) c.push("pop");
+    if (cols.greeks) c.push("vega", "theta", "gamma", "delta");
+    c.push("ltp");
+    if (cols.iv) c.push("iv");
+    c.push("vol");
+    if (cols.chgOi) c.push("chgOi");
+    c.push("oi");
+    return c;
+  }, [cols]);
 
   // Keep the ATM row vertically centred inside the 540px scroll window.
   useEffect(() => {
@@ -471,6 +514,95 @@ export default function FnoTab({ underlying }: { underlying: string }) {
   const isModel = chain.mode === "model";
   const oiCell = (v: number | null | undefined) => (isModel ? "—" : fmtOI(v));
 
+  const HEAD: Record<string, string> = {
+    oi: "People / OI",
+    chgOi: "ΔOI",
+    vol: "Volume",
+    iv: "IV",
+    ltp: "LTP ₹",
+    delta: "Speed Δ",
+    gamma: "Gamma",
+    theta: "Time Θ ₹/d",
+    vega: "Vega",
+    pop: "Win %",
+  };
+
+  const callCell = (k: string, r: Row) => {
+    switch (k) {
+      case "oi":
+        return (
+          <td key={k} className="px-2 py-1.5 text-right knum text-[11px]"
+              style={{ color: spot != null && r.strike < spot ? "var(--ink)" : "var(--muted)" }}>
+            {oiCell(r.ce_oi)}
+          </td>
+        );
+      case "chgOi":
+        return <td key={k} className="px-2 py-1.5 text-right knum text-[10.5px] muted">{oiCell(r.ce_chg_oi)}</td>;
+      case "vol":
+        return <td key={k} className="px-2 py-1.5 text-right knum text-[10.5px] muted">{oiCell(r.ce_volume)}</td>;
+      case "iv":
+        return <td key={k} className="px-2 py-1.5 text-right knum text-[10.5px] muted">{r.ce_iv != null ? `${r.ce_iv.toFixed(1)}%` : "—"}</td>;
+      case "ltp":
+        return (
+          <td key={k} className="px-2 py-1.5 text-right">
+            <button onClick={() => {
+              setRType("CE"); setRStrike(String(r.strike));
+              setRLotSize(String(r.lot_size || defaultLot));
+              if (r.ce_ltp != null) setREntry(String(r.ce_ltp));
+            }}
+                    className="knum text-[11.5px] font-semibold hover:underline"
+                    title="Use this call's strike and LTP in the replay calculator">
+              {r.ce_ltp != null ? r.ce_ltp.toFixed(2) : "—"}
+            </button>
+          </td>
+        );
+      case "delta": return <GreekCell key={k} g={r.ce_greeks} field="delta" />;
+      case "gamma": return <GreekCell key={k} g={r.ce_greeks} field="gamma" dec={4} />;
+      case "theta": return <GreekCell key={k} g={r.ce_greeks} field="theta" />;
+      case "vega": return <GreekCell key={k} g={r.ce_greeks} field="vega" />;
+      case "pop": return <PopCell key={k} g={r.ce_greeks} />;
+      default: return null;
+    }
+  };
+
+  const putCell = (k: string, r: Row) => {
+    switch (k) {
+      case "oi":
+        return (
+          <td key={k} className="px-2 py-1.5 text-right knum text-[11px]"
+              style={{ color: spot != null && r.strike > spot ? "var(--ink)" : "var(--muted)" }}>
+            {oiCell(r.pe_oi)}
+          </td>
+        );
+      case "chgOi":
+        return <td key={k} className="px-2 py-1.5 text-right knum text-[10.5px] muted">{oiCell(r.pe_chg_oi)}</td>;
+      case "vol":
+        return <td key={k} className="px-2 py-1.5 text-right knum text-[10.5px] muted">{oiCell(r.pe_volume)}</td>;
+      case "iv":
+        return <td key={k} className="px-2 py-1.5 text-right knum text-[10.5px] muted">{r.pe_iv != null ? `${r.pe_iv.toFixed(1)}%` : "—"}</td>;
+      case "ltp":
+        return (
+          <td key={k} className="px-2 py-1.5 text-right">
+            <button onClick={() => {
+              setRType("PE"); setRStrike(String(r.strike));
+              setRLotSize(String(r.lot_size || defaultLot));
+              if (r.pe_ltp != null) setREntry(String(r.pe_ltp));
+            }}
+                    className="knum text-[11.5px] font-semibold hover:underline"
+                    title="Use this put's strike and LTP in the replay calculator">
+              {r.pe_ltp != null ? r.pe_ltp.toFixed(2) : "—"}
+            </button>
+          </td>
+        );
+      case "delta": return <GreekCell key={k} g={r.pe_greeks} field="delta" />;
+      case "gamma": return <GreekCell key={k} g={r.pe_greeks} field="gamma" dec={4} />;
+      case "theta": return <GreekCell key={k} g={r.pe_greeks} field="theta" />;
+      case "vega": return <GreekCell key={k} g={r.pe_greeks} field="vega" />;
+      case "pop": return <PopCell key={k} g={r.pe_greeks} />;
+      default: return null;
+    }
+  };
+
   return (
     <div className="space-y-3">
       {isModel && (
@@ -569,77 +701,86 @@ export default function FnoTab({ underlying }: { underlying: string }) {
                   className={`chip !text-[10px] ${showAll ? "chip-active" : ""}`}>
             {showAll ? "Show ATM ±10" : "Show All Strikes"}
           </button>
+          <details className="relative">
+            <summary className="chip !text-[10px] cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+              ⚙️ Filter Columns ▾
+            </summary>
+            <div className="absolute right-0 z-30 mt-1 w-[230px] rounded-lg p-3 space-y-2 text-[11.5px]"
+                 style={{ background: "var(--surface)", border: "1px solid var(--line)", boxShadow: "0 10px 28px rgba(0,0,0,.18)" }}>
+              {([
+                ["chgOi", "Change in OI (ΔOI)"],
+                ["iv", "Market Fear (IV %)"],
+                ["pop", "Win Chance (POP %)"],
+                ["greeks", "Option Greeks (Delta, Gamma, Theta, Vega)"],
+              ] as const).map(([key, label]) => (
+                <label key={key} className="flex items-start gap-2 cursor-pointer">
+                  <input type="checkbox" checked={cols[key]}
+                         onChange={(e) => setCols((prev) => ({ ...prev, [key]: e.target.checked }))}
+                         className="mt-0.5" />
+                  <span>{label}</span>
+                </label>
+              ))}
+              <div className="flex flex-wrap gap-1.5 pt-2" style={{ borderTop: "1px solid var(--line)" }}>
+                <button onClick={() => setCols({ chgOi: true, iv: true, pop: true, greeks: true })}
+                        className="chip !text-[9.5px]">Show All Columns</button>
+                <button onClick={() => setCols({ chgOi: false, iv: false, pop: false, greeks: false })}
+                        className={`chip !text-[9.5px] ${!anyExtra ? "chip-active" : ""}`}>
+                  Simple View (Default)
+                </button>
+              </div>
+            </div>
+          </details>
         </div>
       </div>
 
       {/* chain table — 540px scroll window, auto-centred on ATM */}
       <div className="card overflow-hidden">
         <div ref={scrollRef} className="max-h-[540px] overflow-auto">
-          <table className="w-full min-w-[1560px] border-collapse">
+          <table className="w-full border-collapse" style={{ minWidth: anyExtra ? 1480 : 720 }}>
             <thead>
               <tr style={{ background: "var(--surface-2)" }}>
-                <th colSpan={10} className="sticky top-0 z-20 px-3 py-1.5 text-center text-[10px] font-black uppercase tracking-[0.14em]"
+                <th colSpan={callCols.length} className="sticky top-0 z-20 px-3 py-1.5 text-center text-[10px] font-black uppercase tracking-[0.14em]"
                     style={{ background: "var(--surface-2)", borderRight: "1px solid var(--line)", color: "var(--up)" }}>
-                  Calls
+                  CALLS (TEZI)
                 </th>
                 <th className="sticky top-0 z-20 px-3 py-1.5 text-center text-[10px] font-black uppercase tracking-[0.14em]"
                     style={{ background: "var(--surface-2)", borderLeft: "1px solid var(--line)", borderRight: "1px solid var(--line)" }}>
-                  Strike / DTE
+                  STRIKE PRICE
                 </th>
-                <th colSpan={10} className="sticky top-0 z-20 px-3 py-1.5 text-center text-[10px] font-black uppercase tracking-[0.14em]"
+                <th colSpan={putCols.length} className="sticky top-0 z-20 px-3 py-1.5 text-center text-[10px] font-black uppercase tracking-[0.14em]"
                     style={{ background: "var(--surface-2)", borderLeft: "1px solid var(--line)", color: "var(--down)" }}>
-                  Puts
+                  PUTS (MANDI)
                 </th>
               </tr>
               <tr style={{ background: "var(--surface-2)", borderTop: "1px solid var(--line)" }}>
-                {["OI", "ΔOI", "Volume", "IV", "LTP", "Delta", "Gamma", "Theta ₹/day", "Vega", "POP"].map((h) => (
+                {callCols.map((h) => (
                   <th key={`c-${h}`} className="sticky top-[27px] z-20 table-head text-right px-2 py-1.5 whitespace-nowrap"
-                      style={{ background: "var(--surface-2)" }}>{h}</th>
+                      style={{ background: "var(--surface-2)" }}>
+                    {h === "ltp" ? "Call Price ₹" : HEAD[h]}
+                  </th>
                 ))}
                 <th className="sticky top-[27px] z-20 table-head text-center px-3 py-1.5 whitespace-nowrap"
                     style={{ background: "var(--surface-2)", borderLeft: "1px solid var(--line)", borderRight: "1px solid var(--line)" }}>
-                  Strike
+                  Strike / DTE
                 </th>
-                {["POP", "Vega", "Theta ₹/day", "Gamma", "Delta", "LTP", "IV", "Volume", "ΔOI", "OI"].map((h) => (
+                {putCols.map((h) => (
                   <th key={`p-${h}`} className="sticky top-[27px] z-20 table-head text-right px-2 py-1.5 whitespace-nowrap"
-                      style={{ background: "var(--surface-2)" }}>{h}</th>
+                      style={{ background: "var(--surface-2)" }}>
+                    {h === "ltp" ? "Put Price ₹" : HEAD[h]}
+                  </th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {visible.map((r) => {
                 const isAtm = r.strike === atm;
-                const ceItm = spot != null && r.strike < spot;
-                const peItm = spot != null && r.strike > spot;
                 return (
                   <tr key={r.strike} ref={isAtm ? atmRef : undefined}
                       className="table-row"
                       style={isAtm
                         ? { background: "color-mix(in srgb, var(--accent) 9%, transparent)" }
                         : undefined}>
-                    <td className="px-2 py-1.5 text-right knum text-[11px]"
-                        style={{ color: ceItm ? "var(--ink)" : "var(--muted)" }}>
-                      {oiCell(r.ce_oi)}
-                    </td>
-                    <td className="px-2 py-1.5 text-right knum text-[10.5px] muted">{oiCell(r.ce_chg_oi)}</td>
-                    <td className="px-2 py-1.5 text-right knum text-[10.5px] muted">{oiCell(r.ce_volume)}</td>
-                    <td className="px-2 py-1.5 text-right knum text-[10.5px] muted">{r.ce_iv != null ? `${r.ce_iv.toFixed(1)}%` : "—"}</td>
-                    <td className="px-2 py-1.5 text-right">
-                      <button onClick={() => {
-                        setRType("CE"); setRStrike(String(r.strike));
-                        setRLotSize(String(r.lot_size || defaultLot));
-                        if (r.ce_ltp != null) setREntry(String(r.ce_ltp));
-                      }}
-                              className="knum text-[11.5px] font-semibold hover:underline"
-                              title="Use this call's strike and LTP in the replay calculator">
-                        {r.ce_ltp != null ? r.ce_ltp.toFixed(2) : "—"}
-                      </button>
-                    </td>
-                    <GreekCell g={r.ce_greeks} field="delta" />
-                    <GreekCell g={r.ce_greeks} field="gamma" dec={4} />
-                    <GreekCell g={r.ce_greeks} field="theta" />
-                    <GreekCell g={r.ce_greeks} field="vega" />
-                    <PopCell g={r.ce_greeks} />
+                    {callCols.map((k) => callCell(k, r))}
 
                     <td className={`px-3 py-1.5 text-center align-middle ${isAtm ? "accent" : ""}`}
                         style={{ borderLeft: "1px solid var(--line)", borderRight: "1px solid var(--line)",
@@ -649,29 +790,7 @@ export default function FnoTab({ underlying }: { underlying: string }) {
                       {isAtm && <div className="chip chip-active !text-[7.5px] !py-0 !px-1 mt-0.5">ATM</div>}
                     </td>
 
-                    <PopCell g={r.pe_greeks} />
-                    <GreekCell g={r.pe_greeks} field="vega" />
-                    <GreekCell g={r.pe_greeks} field="theta" />
-                    <GreekCell g={r.pe_greeks} field="gamma" dec={4} />
-                    <GreekCell g={r.pe_greeks} field="delta" />
-                    <td className="px-2 py-1.5 text-right">
-                      <button onClick={() => {
-                        setRType("PE"); setRStrike(String(r.strike));
-                        setRLotSize(String(r.lot_size || defaultLot));
-                        if (r.pe_ltp != null) setREntry(String(r.pe_ltp));
-                      }}
-                              className="knum text-[11.5px] font-semibold hover:underline"
-                              title="Use this put's strike and LTP in the replay calculator">
-                        {r.pe_ltp != null ? r.pe_ltp.toFixed(2) : "—"}
-                      </button>
-                    </td>
-                    <td className="px-2 py-1.5 text-right knum text-[10.5px] muted">{r.pe_iv != null ? `${r.pe_iv.toFixed(1)}%` : "—"}</td>
-                    <td className="px-2 py-1.5 text-right knum text-[10.5px] muted">{oiCell(r.pe_volume)}</td>
-                    <td className="px-2 py-1.5 text-right knum text-[10.5px] muted">{oiCell(r.pe_chg_oi)}</td>
-                    <td className="px-2 py-1.5 text-right knum text-[11px]"
-                        style={{ color: peItm ? "var(--ink)" : "var(--muted)" }}>
-                      {oiCell(r.pe_oi)}
-                    </td>
+                    {putCols.map((k) => putCell(k, r))}
                   </tr>
                 );
               })}
@@ -682,7 +801,7 @@ export default function FnoTab({ underlying }: { underlying: string }) {
              style={{ borderTop: "1px solid var(--line)", background: "var(--surface-2)" }}>
           <span>{chain.greeks_note}</span>
           <span className="opacity-40">·</span>
-          <span>Theta is per lot per day; Vega is per 1 vol point.</span>
+          <span>Daily Time Melting Loss (Theta) is per lot per day; Fear Premium (Vega) is per 1 vol point.</span>
           <span className="opacity-40">·</span>
           <span>Click any LTP to load it into the replay calculator.</span>
           {!isModel && (
@@ -711,30 +830,30 @@ export default function FnoTab({ underlying }: { underlying: string }) {
           <div className="space-y-2.5">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <label className="block">
-                <span className="muted text-[10px] font-bold uppercase tracking-wider">Side</span>
+                <Lbl label="Bet Type (Call / Put)" tip={TIPS.bet} />
                 <select value={rType} onChange={(e) => setRType(e.target.value as "CE" | "PE")}
                         className="surface rounded-lg w-full mt-1 px-2.5 py-2 text-[12px]"
                         style={{ color: "var(--ink)" }}>
-                  <option value="CE">Call (CE)</option>
-                  <option value="PE">Put (PE)</option>
+                  <option value="CE">Call (Tezi / Upside)</option>
+                  <option value="PE">Put (Mandi / Downside)</option>
                 </select>
               </label>
               <label className="block">
-                <span className="muted text-[10px] font-bold uppercase tracking-wider">Strike</span>
+                <Lbl label="Target Deal Price (Strike ₹)" tip={TIPS.strike} />
                 <input value={rStrike} onChange={(e) => setRStrike(e.target.value)}
                        inputMode="decimal"
                        className="surface rounded-lg w-full mt-1 px-2.5 py-2 text-[12px] knum"
                        style={{ color: "var(--ink)" }} />
               </label>
               <label className="block">
-                <span className="muted text-[10px] font-bold uppercase tracking-wider">Lots</span>
+                <Lbl label="How Many Lots" tip={TIPS.lots} />
                 <input value={rLots} onChange={(e) => setRLots(e.target.value)}
                        inputMode="numeric"
                        className="surface rounded-lg w-full mt-1 px-2.5 py-2 text-[12px] knum"
                        style={{ color: "var(--ink)" }} />
               </label>
               <label className="block">
-                <span className="muted text-[10px] font-bold uppercase tracking-wider">Lot size</span>
+                <Lbl label="Lot Size (units per lot)" tip={TIPS.lotSize} />
                 <input value={rLotSize} onChange={(e) => setRLotSize(e.target.value)}
                        inputMode="numeric"
                        className="surface rounded-lg w-full mt-1 px-2.5 py-2 text-[12px] knum"
@@ -744,20 +863,20 @@ export default function FnoTab({ underlying }: { underlying: string }) {
 
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               <label className="block">
-                <span className="muted text-[10px] font-bold uppercase tracking-wider">Entry premium ₹</span>
+                <Lbl label="Premium You Paid (₹)" tip={TIPS.premium} />
                 <input value={rEntry} onChange={(e) => setREntry(e.target.value)}
                        inputMode="decimal"
                        className="surface rounded-lg w-full mt-1 px-2.5 py-2 text-[12px] knum"
                        style={{ color: "var(--ink)" }} />
               </label>
               <label className="block">
-                <span className="muted text-[10px] font-bold uppercase tracking-wider">Entry time IST</span>
+                <Lbl label="Entry Time (IST)" tip={TIPS.entryTime} />
                 <input type="time" value={rEntryTime} onChange={(e) => setREntryTime(e.target.value)}
                        className="surface rounded-lg w-full mt-1 px-2.5 py-2 text-[12px] knum"
                        style={{ color: "var(--ink)" }} />
               </label>
               <label className="block">
-                <span className="muted text-[10px] font-bold uppercase tracking-wider">Spot move %</span>
+                <Lbl label="Expected Market Move %" tip={TIPS.move} />
                 <input value={rMove} onChange={(e) => setRMove(e.target.value)}
                        inputMode="decimal"
                        className="surface rounded-lg w-full mt-1 px-2.5 py-2 text-[12px] knum"
@@ -766,7 +885,7 @@ export default function FnoTab({ underlying }: { underlying: string }) {
             </div>
 
             <div>
-              <span className="muted text-[10px] font-bold uppercase tracking-wider">Horizon</span>
+              <Lbl label="How Long to Hold" tip={TIPS.horizon} />
               <div className="flex flex-wrap gap-1.5 mt-1.5">
                 {[
                   ["+10m", "+10m"], ["+30m", "+30m"], ["+1h", "+1h"],
@@ -782,7 +901,7 @@ export default function FnoTab({ underlying }: { underlying: string }) {
 
             <div className="grid grid-cols-2 gap-2">
               <label className="block">
-                <span className="muted text-[10px] font-bold uppercase tracking-wider">IV shift (vol points)</span>
+                <Lbl label="Fear / Speed Change (IV points)" tip={TIPS.ivShift} />
                 <input value={rIvShift} onChange={(e) => setRIvShift(e.target.value)}
                        inputMode="decimal"
                        className="surface rounded-lg w-full mt-1 px-2.5 py-2 text-[12px] knum"
@@ -791,7 +910,7 @@ export default function FnoTab({ underlying }: { underlying: string }) {
               <div className="flex items-end">
                 <button onClick={() => runReplay()} disabled={replayBusy}
                         className="btn-primary w-full justify-center !py-2 !text-[12px]">
-                  {replayBusy ? "Projecting…" : "Project option P&L"}
+                  {replayBusy ? "Projecting…" : "Show My Profit / Loss"}
                 </button>
               </div>
             </div>
@@ -813,27 +932,27 @@ export default function FnoTab({ underlying }: { underlying: string }) {
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="rounded-md px-2.5 py-2" style={{ border: "1px solid var(--line)", background: "var(--surface)" }}>
-                    <div className="muted text-[9px] font-bold uppercase tracking-wider">Projected premium</div>
+                    <div className="muted text-[9px] font-bold uppercase tracking-wider">Expected Option Price</div>
                     <div className="knum text-[17px] font-black mt-0.5">{inr(replay.exit?.premium)}</div>
                     <div className="muted text-[9.5px] mt-0.5">
                       from {inr(replay.entry?.premium)} · spot {inr(replay.exit?.spot)}
                     </div>
                   </div>
                   <div className="rounded-md px-2.5 py-2" style={{ border: "1px solid var(--line)", background: "var(--surface)" }}>
-                    <div className="muted text-[9px] font-bold uppercase tracking-wider">Investment</div>
+                    <div className="muted text-[9px] font-bold uppercase tracking-wider">Money You Put In</div>
                     <div className="knum text-[17px] font-black mt-0.5">{inr(replay.investment)}</div>
                     <div className="muted text-[9.5px] mt-0.5">
                       {replay.qty} units = {replay.lots} lot{replay.lots > 1 ? "s" : ""} × {replay.lot_size}
                     </div>
                   </div>
                   <div className="rounded-md px-2.5 py-2" style={{ border: "1px solid var(--line)", background: "var(--surface)" }}>
-                    <div className="muted text-[9px] font-bold uppercase tracking-wider">Gross P&amp;L</div>
+                    <div className="muted text-[9px] font-bold uppercase tracking-wider">Profit Before Charges</div>
                     <div className={`knum text-[17px] font-black mt-0.5 ${(replay.gross_pnl ?? 0) >= 0 ? "text-up" : "text-down"}`}>
                       {inr(replay.gross_pnl)}
                     </div>
                   </div>
                   <div className="rounded-md px-2.5 py-2" style={{ border: "1px solid var(--line)", background: "var(--surface)" }}>
-                    <div className="muted text-[9px] font-bold uppercase tracking-wider">Net P&amp;L</div>
+                    <div className="muted text-[9px] font-bold uppercase tracking-wider">Final Profit / Loss</div>
                     <div className={`knum text-[17px] font-black mt-0.5 ${(replay.net_pnl ?? 0) >= 0 ? "text-up" : "text-down"}`}>
                       {inr(replay.net_pnl)}
                     </div>
@@ -849,11 +968,11 @@ export default function FnoTab({ underlying }: { underlying: string }) {
                     P&amp;L decomposition
                   </div>
                   {[
-                    ["Delta gain", replay.decomposition?.delta_gain, "text-up"],
-                    ["Gamma gain", replay.decomposition?.gamma_gain, "text-up"],
-                    ["Theta decay", replay.decomposition?.theta_loss, "text-down"],
-                    ["Vega gain", replay.decomposition?.vega_gain, "text-up"],
-                    ["Residual", replay.decomposition?.residual, ""],
+                    ["Price Speed Gain (Delta)", replay.decomposition?.delta_gain, "text-up"],
+                    ["Speed Change Gain (Gamma)", replay.decomposition?.gamma_gain, "text-up"],
+                    ["Time Melting Loss (Theta)", replay.decomposition?.theta_loss, "text-down"],
+                    ["Fear Gain (Vega)", replay.decomposition?.vega_gain, "text-up"],
+                    ["Other / Rounding", replay.decomposition?.residual, ""],
                   ].map(([label, value, tone]: any) => (
                     <div key={label} className="flex items-center justify-between px-2.5 py-1.5 text-[11px] table-row">
                       <span className="muted">{label}</span>
@@ -892,10 +1011,10 @@ export default function FnoTab({ underlying }: { underlying: string }) {
       <div className="card p-3.5">
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {([
-            { label: "Delta", tip: TIPS.delta, sub: "premium change per ₹1 spot move" },
-            { label: "Gamma", tip: TIPS.gamma, sub: "change in delta per ₹1 move" },
-            { label: "Theta", tip: TIPS.theta, sub: "₹ lost per lot per day" },
-            { label: "Vega", tip: TIPS.vega, sub: "₹ change per 1 vol point" },
+            { label: "Price Speed (Delta)", tip: TIPS.delta, sub: "premium change per ₹1 spot move" },
+            { label: "Speed Change (Gamma)", tip: TIPS.gamma, sub: "change in delta per ₹1 move" },
+            { label: "Daily Time Melting Loss (Theta)", tip: TIPS.theta, sub: "₹ lost per lot per day" },
+            { label: "Fear Premium (Vega)", tip: TIPS.vega, sub: "₹ change per 1 vol point" },
           ] as { label: string; tip?: Tip; sub: string }[]).map((row) => (
             <div key={row.label}>
               <div className="text-[11.5px] font-bold" style={{ color: "var(--ink)" }}>

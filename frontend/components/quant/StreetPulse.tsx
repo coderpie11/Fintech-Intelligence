@@ -71,6 +71,7 @@ type StreetData = {
   matrix: Row[];
   counts: Record<string, number>;
   headlines: Headline[];
+  catalysts?: { theme: string; symbols: string[]; driver: string; tone: string }[];
   divergence_note: string;
   disclaimer: string;
 };
@@ -151,7 +152,7 @@ export default function StreetPulse() {
         <Panel title="Headline tone" sub="A financial-sentiment model applied to public RSS titles. It reads language, not truth.">
           <div className="flex flex-wrap items-center gap-2 mb-2">
             <Pill tone={d.news_tone?.engine === "finbert" ? "up" : "warn"}>
-              {d.news_tone?.engine === "finbert" ? "FinBERT · CPU" : "Lexicon fallback"}
+              {d.news_tone?.engine === "finbert" ? "Semantic tone model" : "Lexicon tone model"}
             </Pill>
             <span className="muted text-[11px]">{num(d.news_tone?.headlines_scored, 0)} headlines scored</span>
             <span className={`knum text-[12px] font-bold ml-auto ${(d.news_tone?.net_tone || 0) >= 0 ? "text-up" : "text-down"}`}>
@@ -258,6 +259,32 @@ export default function StreetPulse() {
           </table>
         </div>
         <Note>{d.divergence_note}</Note>
+      </Panel>
+
+      <Panel
+        title="Festive, Seasonal & Sector Catalyst Radar"
+        sub="Real Indian demand drivers that sit outside today's delivery print. Themes are context, not buy/sell signals."
+      >
+        <div className="grid sm:grid-cols-2 gap-2.5">
+          {(d.catalysts || []).map((c) => (
+            <div key={c.theme} className="rounded-lg px-3 py-2.5"
+                 style={{ border: "1px solid var(--line)", background: "var(--surface-2)" }}>
+              <div className="text-[12px] font-bold leading-snug">{c.theme}</div>
+              <div className="muted text-[10.5px] leading-snug mt-1">{c.driver}</div>
+              <div className="flex flex-wrap gap-1 mt-2">
+                {c.symbols.map((s) => (
+                  <Link key={s} href={`/stocks/${s}`} className="chip !text-[9.5px] hover:opacity-80">
+                    {s}
+                  </Link>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        <Note>
+          Seasonal themes are curated market context — they do not alter the measured flows,
+          delivery percentages or sentiment scores above.
+        </Note>
       </Panel>
 
       <p className="muted text-[11px] leading-relaxed">{d.disclaimer}</p>

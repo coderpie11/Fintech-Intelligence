@@ -104,10 +104,10 @@ function envNum(e?: Env): number | null {
   return e && e.value != null ? e.value : null;
 }
 
-function PctCell({ env, strong = false }: { env?: Env; strong?: boolean }) {
+function PctCell({ env, strong = false, active = false }: { env?: Env; strong?: boolean; active?: boolean }) {
   const v = envNum(env);
   return (
-    <span className={`knum text-[11.5px] ${strong ? "font-bold" : ""} ${v == null ? "muted" : v >= 0 ? "text-up" : "text-down"}`}>
+    <span className={`knum text-[11.5px] ${strong || active ? "font-bold" : ""} ${v == null ? "muted" : v >= 0 ? "text-up" : "text-down"}`}>
       {v != null ? pct(v) : "—"}
     </span>
   );
@@ -121,7 +121,39 @@ function NumCell({ env, fmt, suffix = "" }: { env?: Env; fmt?: (v: number) => st
 
 /* ------------------------------------------------------------------ list */
 
-function FundTable({ funds }: { funds: FundRow[] }) {
+const FUND_TYPES = [
+  "All Mutual Funds", "Large Cap", "Mid Cap", "Small Cap",
+  "Flexi & Multi Cap", "Nifty & Sensex Index", "International / Nasdaq / US",
+  "Gold & Silver Funds", "ELSS Tax Saver", "Hybrid & Balanced", "Debt & Liquid",
+];
+
+const PERIODS = [
+  { key: "1m", label: "1 Month (1M)" },
+  { key: "3m", label: "3 Months (3M)" },
+  { key: "6m", label: "6 Months (6M)" },
+  { key: "1y", label: "1 Year (1Y)" },
+  { key: "3y", label: "3 Years (3Y CAGR)" },
+  { key: "5y", label: "5 Years (5Y CAGR)" },
+] as const;
+
+type PeriodKey = (typeof PERIODS)[number]["key"];
+
+function fundBucket(f: FundRow): string {
+  const hay = `${f.category || ""} ${f.broad_category || ""} ${f.name || ""}`.toLowerCase();
+  if (/silver|gold/.test(hay)) return "Gold & Silver Funds";
+  if (/elss|tax saver/.test(hay)) return "ELSS Tax Saver";
+  if (/nasdaq|s&p 500|us equity|international|overseas|global/.test(hay)) return "International / Nasdaq / US";
+  if (/index|nifty|sensex/.test(hay)) return "Nifty & Sensex Index";
+  if (/small/.test(hay)) return "Small Cap";
+  if (/mid/.test(hay)) return "Mid Cap";
+  if (/large cap|large & mid|large and mid/.test(hay)) return "Large Cap";
+  if (/flexi|multi cap|multicap|focused|value fund|contra|dividend yield/.test(hay)) return "Flexi & Multi Cap";
+  if (/hybrid|balanced|arbitrage|multi asset|equity savings|conservative|aggressive/.test(hay)) return "Hybrid & Balanced";
+  if (/debt|liquid|gilt|bond|overnight|money market|credit risk|corporate bond/.test(hay)) return "Debt & Liquid";
+  return "Flexi & Multi Cap";
+}
+
+function FundTable({ funds, period }: { funds: FundRow[]; period: PeriodKey }) {
   return (
     <div className="card overflow-hidden">
       <div className="overflow-x-auto">
@@ -130,16 +162,16 @@ function FundTable({ funds }: { funds: FundRow[] }) {
             <tr style={{ background: "var(--surface-2)" }}>
               <th className="table-head text-left px-3 py-2.5">Scheme</th>
               <th className="table-head text-right px-2.5 py-2.5">NAV</th>
-              <th className="table-head text-right px-2.5 py-2.5">1M</th>
-              <th className="table-head text-right px-2.5 py-2.5">3M</th>
-              <th className="table-head text-right px-2.5 py-2.5">6M</th>
-              <th className="table-head text-right px-2.5 py-2.5">1Y</th>
-              <th className="table-head text-right px-2.5 py-2.5">
-                <MetricTip label="3Y CAGR" tip={TIPS.cagr}>3Y CAGR</MetricTip>
-              </th>
-              <th className="table-head text-right px-2.5 py-2.5">
-                <MetricTip label="5Y CAGR" tip={TIPS.cagr}>5Y CAGR</MetricTip>
-              </th>
+              {PERIODS.map((p) => (
+                <th key={p.key} className="table-head text-right px-2.5 py-2.5"
+                    style={period === p.key ? { color: "var(--accent)" } : undefined}>
+                  {p.key === "3y" || p.key === "5y" ? (
+                    <MetricTip label={`${p.key.toUpperCase()} CAGR`} tip={TIPS.cagr}>
+                      {p.key.toUpperCase()} CAGR
+                    </MetricTip>
+                  ) : p.key.toUpperCase()}
+                </th>
+              ))}
               <th className="table-head text-right px-2.5 py-2.5">
                 <MetricTip label="Volatility" tip={TIPS.vol}>Volatility</MetricTip>
               </th>
@@ -176,12 +208,21 @@ function FundTable({ funds }: { funds: FundRow[] }) {
                   <div className="knum text-[12px] font-semibold">{envNum(f.nav_latest) != null ? inr(envNum(f.nav_latest)) : "—"}</div>
                   <div className="muted text-[9.5px]">{f.nav_date ? fmtDate(f.nav_date) : "—"}</div>
                 </td>
-                <td className="px-2.5 py-2.5 text-right"><PctCell env={f.perf_1m} /></td>
-                <td className="px-2.5 py-2.5 text-right"><PctCell env={f.perf_3m} /></td>
-                <td className="px-2.5 py-2.5 text-right"><PctCell env={f.perf_6m} /></td>
-                <td className="px-2.5 py-2.5 text-right"><PctCell env={f.perf_1y} /></td>
-                <td className="px-2.5 py-2.5 text-right"><PctCell env={f.perf_3y} strong /></td>
-                <td className="px-2.5 py-2.5 text-right"><PctCell env={f.perf_5y} strong /></td>
+                {PERIODS.map((p) => {
+                  const env = p.key === "1m" ? f.perf_1m
+                    : p.key === "3m" ? f.perf_3m
+                    : p.key === "6m" ? f.perf_6m
+                    : p.key === "1y" ? f.perf_1y
+                    : p.key === "3y" ? f.perf_3y : f.perf_5y;
+                  return (
+                    <td key={p.key} className="px-2.5 py-2.5 text-right"
+                        style={period === p.key ? { background: "color-mix(in srgb, var(--accent) 7%, transparent)" } : undefined}>
+                      <PctCell env={env}
+                               strong={p.key === "3y" || p.key === "5y"}
+                               active={period === p.key} />
+                    </td>
+                  );
+                })}
                 <td className="px-2.5 py-2.5 text-right"><NumCell env={f.volatility} suffix="%" /></td>
                 <td className="px-2.5 py-2.5 text-right"><NumCell env={f.sharpe} /></td>
                 <td className="px-2.5 py-2.5 text-right"><PctCell env={f.max_drawdown} /></td>
@@ -203,11 +244,11 @@ function FundTable({ funds }: { funds: FundRow[] }) {
 export function FundsDesk({ kind }: { kind: "mf" | "etf" }) {
   const [data, setData] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [amc, setAmc] = useState("");
-  const [cat, setCat] = useState("");
   const [q, setQ] = useState("");
-  const [sort, setSort] = useState("aum");
-  const [page, setPage] = useState(1);
+  const [debouncedQ, setDebouncedQ] = useState("");
+  const [type, setType] = useState("All Mutual Funds");
+  const [period, setPeriod] = useState<PeriodKey>("1y");
+  const [order, setOrder] = useState<"desc" | "asc">("desc");
 
   // Deep links such as /mutual-funds?q=nestec (global search) pre-fill the
   // filter. Read from the URL on mount to keep the route static.
@@ -217,20 +258,48 @@ export function FundsDesk({ kind }: { kind: "mf" | "etf" }) {
   }, []);
 
   useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedQ(q), 180);
+    return () => window.clearTimeout(id);
+  }, [q]);
+
+  useEffect(() => {
     // Guard against out-of-order responses: an all-scheme fuzzy search can take
     // longer than the default browse query, which would otherwise overwrite the
     // filtered table with unfiltered rows.
     let live = true;
     setErr(null);
-    const p = new URLSearchParams({ kind, sort, page: String(page), limit: "40" });
-    if (amc) p.set("amc", amc);
-    if (cat) p.set("category", cat);
-    if (q.trim()) p.set("q", q.trim());
+    const p = new URLSearchParams({ kind, limit: "500", page: "1" });
+    if (debouncedQ.trim()) p.set("q", debouncedQ.trim());
     getJSON(`/mutual-funds?${p}`)
       .then((r) => { if (live) setData(r); })
       .catch((e) => { if (live) setErr(String(e.message || e)); });
     return () => { live = false; };
-  }, [kind, amc, cat, q, sort, page]);
+  }, [kind, debouncedQ]);
+
+  const rows = useMemo(() => {
+    const list: FundRow[] = data?.funds || [];
+    const needle = q.trim().toLowerCase();
+    // A server-side search is already fuzzy/phonetic ("nestec" → Nasdaq), so
+    // keep its relevance order instead of dropping those rows on a literal
+    // substring test. The local needle only refines the default browse list.
+    const serverSearch = debouncedQ.trim().length > 0;
+    const filtered = list.filter((f) => {
+      if (type !== "All Mutual Funds" && fundBucket(f) !== type) return false;
+      if (serverSearch || !needle) return true;
+      return f.name.toLowerCase().includes(needle)
+        || (f.amc || "").toLowerCase().includes(needle)
+        || (f.category || "").toLowerCase().includes(needle)
+        || f.code.toLowerCase().includes(needle);
+    });
+    return [...filtered].sort((a, b) => {
+      const av = envNum(a[`perf_${period}` as keyof FundRow] as Env);
+      const bv = envNum(b[`perf_${period}` as keyof FundRow] as Env);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return order === "desc" ? bv - av : av - bv;
+    });
+  }, [data, q, debouncedQ, type, period, order]);
 
   const latest = useMemo(() => {
     const dates = (data?.funds || []).map((f: FundRow) => f.nav_date).filter(Boolean).sort();
@@ -245,73 +314,69 @@ export function FundsDesk({ kind }: { kind: "mf" | "etf" }) {
         sub={
           kind === "etf"
             ? "Exchange-traded funds with live quotes and true 1/3/5-year stats computed from real NAV series."
-            : "Active Direct-Growth schemes across equity, hybrid, debt and liquid categories. Every row has a real 5-year NAV series — there is no NAV-pending state."
+            : "Active Direct-Growth schemes across large, mid, small, flexi, index, international, gold/silver, ELSS, hybrid and debt categories. Filter by type, pick a return period and sort instantly."
         }
         right={<RefreshButton stage="funds" />}
       />
 
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        <div className="flex flex-wrap gap-1.5">
-          {[
-            ["aum", "By AUM"], ["performance_1y", "1Y"], ["performance_3y", "3Y"],
-            ["performance_5y", "5Y"], ["name", "A–Z"],
-          ].map(([s, label]) => (
-            <button key={s} onClick={() => { setSort(s); setPage(1); }}
-                    className={`chip !text-[11px] ${sort === s ? "chip-active" : ""}`}>
-              {label}
-            </button>
-          ))}
-        </div>
-        <select value={amc} onChange={(e) => { setAmc(e.target.value); setPage(1); }}
-                className="surface rounded-lg px-3 py-1.5 text-[12px]" style={{ color: "var(--ink)" }}>
-          <option value="">All AMCs</option>
-          {(data?.amcs || []).map((a: string) => <option key={a}>{a}</option>)}
-        </select>
-        <select value={cat} onChange={(e) => { setCat(e.target.value); setPage(1); }}
-                className="surface rounded-lg px-3 py-1.5 text-[12px]" style={{ color: "var(--ink)" }}>
-          <option value="">All categories</option>
-          {(data?.categories || []).map((c: string) => <option key={c}>{c}</option>)}
-        </select>
         <div className="surface rounded-lg px-3 py-1.5 flex-1 min-w-[220px] max-w-md">
-          <input value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }}
-                 placeholder="Search scheme or AMC…"
+          <input value={q} onChange={(e) => setQ(e.target.value)}
+                 placeholder="Search any of 38,000+ schemes or AMC…"
                  className="w-full bg-transparent text-[12.5px] outline-none"
                  style={{ color: "var(--ink)" }} />
         </div>
+        <label className="flex items-center gap-1.5">
+          <span className="muted text-[9.5px] font-bold uppercase tracking-[0.12em]">Type</span>
+          <select value={type} onChange={(e) => setType(e.target.value)}
+                  className="surface rounded-lg px-2.5 py-1.5 text-[12px]" style={{ color: "var(--ink)" }}>
+            {FUND_TYPES.map((t) => <option key={t}>{t}</option>)}
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5">
+          <span className="muted text-[9.5px] font-bold uppercase tracking-[0.12em]">Return period</span>
+          <select value={period} onChange={(e) => setPeriod(e.target.value as PeriodKey)}
+                  className="surface rounded-lg px-2.5 py-1.5 text-[12px]" style={{ color: "var(--ink)" }}>
+            {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5">
+          <span className="muted text-[9.5px] font-bold uppercase tracking-[0.12em]">Sort by return</span>
+          <select value={order} onChange={(e) => setOrder(e.target.value as "desc" | "asc")}
+                  className="surface rounded-lg px-2.5 py-1.5 text-[12px]" style={{ color: "var(--ink)" }}>
+            <option value="desc">Highest Return First (Max → Min ↓)</option>
+            <option value="asc">Lowest Return First (Min → Max ↑)</option>
+          </select>
+        </label>
       </div>
 
       {err && <ErrorBox message={err} stage="funds" />}
       {!data && !err && <Skeleton rows={10} />}
 
-      {data && data.funds.length > 0 && (
+      {data && rows.length > 0 && (
         <>
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <div className="muted text-[11.5px]">
-              {data.count} schemes with a live NAV series · page {data.page}/{data.pages}
+              {rows.length} of {data.count} schemes shown
               {latest ? ` · latest NAV ${fmtDate(latest)}` : ""}
-            </div>
-            <div className="flex gap-1.5">
-              <button disabled={page <= 1} onClick={() => setPage(page - 1)}
-                      className="btn-secondary !px-3 !py-1.5 !text-[11.5px]">← Prev</button>
-              <button disabled={page >= data.pages} onClick={() => setPage(page + 1)}
-                      className="btn-secondary !px-3 !py-1.5 !text-[11.5px]">Next →</button>
+              {debouncedQ ? ` · searched all ${data.count} matching schemes` : ""}
             </div>
           </div>
-          <FundTable funds={data.funds} />
+          <FundTable funds={rows} period={period} />
           <p className="muted text-[10.5px] mt-2 leading-relaxed">
-            Returns are computed from the stored mfapi.in NAV series; 3Y and 5Y are
-            compound annual growth rates. TER and AUM appear when the Groww scheme page
-            has been enriched — a blank means the source did not disclose it, not zero.
+            Returns are computed from the stored NAV series; 3Y and 5Y are
+            compound annual growth rates. TER and AUM appear when the scheme record
+            has been enriched — a blank means the field was not disclosed, not zero.
           </p>
         </>
       )}
 
-      {data && data.funds.length === 0 && (
+      {data && rows.length === 0 && (
         <div className="card p-5">
           <div className="text-[14px] font-bold">No scheme matches these filters</div>
           <p className="muted text-[12.5px] mt-1">
-            Clear the search or category filter. The desk only lists schemes with a
-            current five-year NAV series, so dead or stale codes never appear.
+            Clear the search or type filter. The desk lists active schemes with a
+            current NAV series; typing searches all 38,000+ AMFI codes.
           </p>
         </div>
       )}
@@ -797,7 +862,7 @@ export function FundDetail({ code }: { code: string }) {
     return (
       <div className="mx-auto max-w-[1600px] px-4 sm:px-6 py-8">
         <PageHeader eyebrow={`Scheme ${code}`} title={d.name || code}
-                    sub="This scheme code exists in the AMFI universe but mfapi.in did not return a NAV series." />
+                    sub="This scheme code exists in the fund universe but no NAV series is available yet." />
         <div className="card p-5 muted text-[12.5px] leading-relaxed">
           No NAV history is available from the free source right now, so the desk will
           not invent a chart, return or risk number. Try Refresh, or open a scheme from
@@ -1013,8 +1078,8 @@ export function FundDetail({ code }: { code: string }) {
               </div>
               {d.reported_risk?.source && (
                 <p className="muted text-[10.5px] mt-3 leading-relaxed">
-                  Groww-reported risk stats are shown alongside the platform's own
-                  calculations in the risk section. Source: {d.reported_risk.source}.
+                  Reported risk stats are shown alongside the platform's own
+                  calculations in the risk section.
                 </p>
               )}
             </div>
@@ -1077,7 +1142,7 @@ export function FundDetail({ code }: { code: string }) {
             </div>
             <div className="px-3 py-2 muted text-[10.5px]"
                  style={{ borderTop: "1px solid var(--line)", background: "var(--surface-2)" }}>
-              {d.fund?.source || "Groww scheme page"} · {holdings.length} disclosed positions.
+              {holdings.length} disclosed positions.
               Badges are AI Verified unless the AMC itself published a rationale.
             </div>
           </div>
@@ -1151,10 +1216,10 @@ export function FundDetail({ code }: { code: string }) {
             <dl className="space-y-2 text-[12px]">
               {[
                 ["Scheme code", d.code],
-                ["NAV source", "mfapi.in (AMFI-sourced NAV history)"],
+                ["NAV basis", "Stored NAV history"],
                 ["NAV depth", `${Number(d.history_points || 0).toLocaleString("en-IN")} observations from ${d.history_start ? fmtDate(d.history_start) : "—"}`],
-                ["Fund facts source", d.fund?.source || "Groww scheme page"],
-                ["Holdings source", d.holdings_date ? `Groww portfolio disclosure ${fmtDate(d.holdings_date)}` : "Groww scheme page"],
+                ["Fund facts basis", "Disclosed scheme record"],
+                ["Holdings basis", d.holdings_date ? `Portfolio disclosure ${fmtDate(d.holdings_date)}` : "Disclosed scheme record"],
                 ["Benchmark", d.benchmark_used || "—"],
                 ["Risk engine", "Platform-computed from the stored NAV series"],
               ].map(([k, v]) => (

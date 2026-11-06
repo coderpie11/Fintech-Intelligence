@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getJSON } from "@/lib/api";
 import { inr, pct } from "@/lib/format";
 import { Bar, ErrLine, Loading, Metric, Note, Panel, Pill, num, signed } from "./Kit";
@@ -37,6 +37,8 @@ type XRow = {
 
 type XRayData = {
   asof: string;
+  session_date?: string | null;
+  session_label?: string | null;
   market_status: { value: string; status: string; note: string };
   chain: {
     step_1_official_flows: {
@@ -64,6 +66,23 @@ type XRayData = {
   footer_note: string;
 };
 
+const SECTOR_GROUPS: { key: string; label: string; words: string[] }[] = [
+  { key: "all", label: "All Sectors", words: [] },
+  { key: "banking", label: "Banking & Finance", words: ["bank", "financ", "nbfc", "insur"] },
+  { key: "it", label: "IT & Tech", words: ["it ", "software", "technolog", "telecom", "digital"] },
+  { key: "defense", label: "Defense & Capex", words: ["defen", "capital goods", "infra", "ship", "aerospace", "engineering"] },
+  { key: "auto", label: "Auto & Retail", words: ["auto", "retail", "consumer", "apparel", "textile"] },
+  { key: "energy", label: "Energy & Metals", words: ["energy", "power", "metal", "oil", "gas", "mining"] },
+  { key: "fmcg", label: "FMCG & Pharma", words: ["fmcg", "pharma", "health", "food", "household"] },
+];
+
+function matchesSector(sector: string | null, key: string): boolean {
+  if (key === "all") return true;
+  const s = (sector || "").toLowerCase();
+  const group = SECTOR_GROUPS.find((g) => g.key === key);
+  return !!group && group.words.some((w) => s.includes(w));
+}
+
 function SectorRow({ s, side }: { s: Sector; side: "up" | "down" }) {
   const v = Math.min(100, Math.abs(s.participation_tilt));
   return (
@@ -83,6 +102,14 @@ function SectorRow({ s, side }: { s: Sector; side: "up" | "down" }) {
 export default function XRay() {
   const [d, setD] = useState<XRayData | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [sectorFilter, setSectorFilter] = useState("all");
+
+  const filteredShockers = useMemo(
+    () => (d?.volume_shockers || []).filter((r) => matchesSector(r.sector, sectorFilter)),
+    [d, sectorFilter]);
+  const filteredConfirmations = useMemo(
+    () => (d?.chain?.step_3_stock_confirmation?.rows || []).filter((r) => matchesSector(r.sector, sectorFilter)),
+    [d, sectorFilter]);
 
   const run = () => {
     setErr(null);
@@ -103,6 +130,29 @@ export default function XRay() {
 
   return (
     <div className="space-y-3">
+      <div className="rounded-xl px-4 py-3"
+           style={{ border: "1px solid color-mix(in srgb, var(--accent) 40%, var(--line))",
+                    background: "color-mix(in srgb, var(--accent) 8%, transparent)" }}>
+        <div className="text-[12.5px] font-bold leading-snug">
+          📅 Official Session Data: Showing post-market institutional money flow for{" "}
+          <span className="accent">{d.session_label || d.session_date || d.asof}</span>.
+        </div>
+        <div className="muted text-[11px] leading-snug mt-1">
+          (Note: On weekends or before 4:30 PM IST on trading days, this displays the latest
+          completed market session&apos;s closing data.)
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="muted text-[9.5px] font-bold uppercase tracking-[0.13em] mr-1">Session sector filter</span>
+        {SECTOR_GROUPS.map((g) => (
+          <button key={g.key} onClick={() => setSectorFilter(g.key)}
+                  className={`chip !text-[10px] ${sectorFilter === g.key ? "chip-active" : ""}`}>
+            {g.label}
+          </button>
+        ))}
+      </div>
+
       <Panel
         title="4 PM Market X-Ray — the money-flow chain"
         sub="Four steps, in order: official rupee flows, sector participation tilt, stock-level confirmation, then market context. Each step states what it can and cannot prove."
@@ -182,7 +232,7 @@ export default function XRay() {
               </tr>
             </thead>
             <tbody>
-              {(s3?.rows || []).map((r) => (
+              {filteredConfirmations.map((r) => (
                 <tr key={r.symbol} className="table-row">
                   <td className="px-3 py-2.5">
                     <Link href={r.href} className="text-[12.5px] font-bold hover:underline">{r.symbol}</Link>
@@ -214,7 +264,7 @@ export default function XRay() {
                 </tr>
               </thead>
               <tbody>
-                {(d.volume_shockers || []).map((r) => (
+                {filteredShockers.map((r) => (
                   <tr key={r.symbol} className="table-row">
                     <td className="px-3 py-2.5">
                       <Link href={r.href} className="text-[12.5px] font-bold hover:underline">{r.symbol}</Link>

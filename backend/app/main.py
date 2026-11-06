@@ -1,4 +1,4 @@
-"""Bharat Fintech Intelligence — FastAPI application assembly."""
+"""Fintech Intelligence — FastAPI application assembly."""
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -47,7 +47,7 @@ def _nightly_refresh() -> None:
         pass
 
 
-app = FastAPI(title="Bharat Fintech Intelligence API",
+app = FastAPI(title="Fintech Intelligence API",
               version="1.0.0",
               description="Facts, math and education for Indian capital markets. "
                           "Not a buy/sell recommendation.",
@@ -66,5 +66,6 @@ app.include_router(api)
 
 @app.get("/")
 def root():
-    return {"service": "Bharat Fintech Intelligence API",
+    return {"service": "Fintech Intelligence API",
             "docs": "/docs", "health": "/api/v1/health"}
+

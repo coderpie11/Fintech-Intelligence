@@ -5,7 +5,7 @@ import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 
 export const metadata: Metadata = {
-  title: "Bharat Fintech Intelligence — India's Facts-First Market Database",
+  title: "Fintech Intelligence — India's Facts-First Market Database",
   description:
     "Institutional-grade Indian market encyclopedia: equities, indices, F&O, IPOs, mutual funds, ETFs, bonds, gold, silver, REITs and education. Not a buy/sell recommendation.",
 };

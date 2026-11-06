@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { getJSON, postJSON, type Env } from "@/lib/api";
-import { fmtDate, inr, pct } from "@/lib/format";
+import { getJSON, type Env } from "@/lib/api";
+import { inr, pct } from "@/lib/format";
 import { ErrorBox, PageHeader, RefreshButton, SectionTitle, Skeleton, StatGrid } from "@/components/PageKit";
 import LineChart from "@/components/LineChart";
 import Tabs from "@/components/Tabs";
 import MetricTip from "@/components/MetricTip";
+import GoldSilverCalculator from "@/components/GoldSilverCalculator";
 
 function envNum(e?: Env): number | null {
   return e && e.value != null ? e.value : null;
@@ -30,14 +31,6 @@ export default function CommodityDesk() {
   const [sgb, setSgb] = useState<any>(null);
   const [tab, setTab] = useState("gold");
   const [err, setErr] = useState<string | null>(null);
-
-  const [grams, setGrams] = useState("10");
-  const [years, setYears] = useState("5");
-  const [cagr, setCagr] = useState("8");
-  const [making, setMaking] = useState("12");
-  const [slab, setSlab] = useState("30");
-  const [wealth, setWealth] = useState<any>(null);
-  const [wErr, setWErr] = useState<string | null>(null);
 
   useEffect(() => {
     getJSON("/commodities").then((d) => {
@@ -70,19 +63,7 @@ export default function CommodityDesk() {
     setMetal(tab === "gold" ? g : tab === "silver" ? s : null);
   }, [tab, list]);
 
-  const runWealth = async () => {
-    setWErr(null); setWealth(null);
-    try {
-      const r = await postJSON("/commodities/calc/wealth", {
-        grams: Number(grams), years: Number(years), gold_cagr_pct: Number(cagr),
-        making_charge_pct: Number(making), tax_slab_pct: Number(slab),
-      });
-      setWealth(r);
-    } catch (e: any) { setWErr(String(e.message || e).slice(0, 200)); }
-  };
-
   const isGold = metal?.symbol === "GOLD";
-  const isSilver = metal?.symbol === "SILVER";
   const ratioPoints = useMemo(
     () => (ratio?.points || []).map((p: any) => ({ date: p.date, close: p.ratio })),
     [ratio],
@@ -158,29 +139,20 @@ export default function CommodityDesk() {
           ) : metal ? (
             <>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-4">
-                <div className="card p-3">
-                  <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em]">International front month</div>
-                  <div className="knum text-[22px] font-black mt-1">
-                    ${envNum(metal.last)?.toFixed(2) ?? "—"}
-                  </div>
-                  <div className={`text-[11px] font-semibold ${(envNum(metal.changepct) || 0) >= 0 ? "text-up" : "text-down"}`}>
-                    {envNum(metal.changepct) != null ? pct(envNum(metal.changepct)) : "—"} · USD/oz
-                  </div>
-                </div>
-                <div className="card p-3">
-                  <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em]">USD/INR</div>
-                  <div className="knum text-[22px] font-black mt-1">{envNum(metal.usdinr)?.toFixed(2) ?? "—"}</div>
-                  <div className="muted text-[10px] mt-0.5">conversion rate</div>
-                </div>
                 {isGold ? (
                   <>
                     <div className="card p-3">
-                      <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em]">24K · ₹ per 10 g</div>
+                      <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em]">24K Gold · ₹ per 10 g</div>
                       <div className="knum text-[22px] font-black mt-1">{envNum(metal.inr_per_10g_24k) != null ? inr(envNum(metal.inr_per_10g_24k)) : "—"}</div>
-                      <div className="muted text-[10px] mt-0.5">₹{envNum(metal.inr_per_gram_24k)?.toFixed(2) ?? "—"} per gram</div>
+                      <div className="muted text-[10px] mt-0.5">999 purity, before GST</div>
                     </div>
                     <div className="card p-3">
-                      <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em]">22K · ₹ per 10 g</div>
+                      <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em]">24K Gold · ₹ per 1 g</div>
+                      <div className="knum text-[22px] font-black mt-1">{envNum(metal.inr_per_gram_24k) != null ? inr(envNum(metal.inr_per_gram_24k)) : "—"}</div>
+                      <div className="muted text-[10px] mt-0.5">per gram</div>
+                    </div>
+                    <div className="card p-3">
+                      <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em]">22K Gold · ₹ per 10 g</div>
                       <div className="knum text-[22px] font-black mt-1">{envNum(metal.inr_per_10g_22k) != null ? inr(envNum(metal.inr_per_10g_22k)) : "—"}</div>
                       <div className="muted text-[10px] mt-0.5">91.6% purity conversion</div>
                     </div>
@@ -188,31 +160,54 @@ export default function CommodityDesk() {
                 ) : (
                   <>
                     <div className="card p-3">
-                      <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em]">Silver · ₹ per kg</div>
+                      <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em]">999 Silver · ₹ per 1 kg</div>
                       <div className="knum text-[22px] font-black mt-1">{envNum(metal.inr_per_kg_silver) != null ? inr(envNum(metal.inr_per_kg_silver)) : "—"}</div>
-                      <div className="muted text-[10px] mt-0.5">₹{envNum(metal.inr_per_gram_silver)?.toFixed(2) ?? "—"} per gram</div>
+                      <div className="muted text-[10px] mt-0.5">fine silver, before GST</div>
                     </div>
                     <div className="card p-3">
-                      <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em]">Silver · ₹ per 10 g</div>
+                      <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em]">999 Silver · ₹ per 100 g</div>
+                      <div className="knum text-[22px] font-black mt-1">
+                        {envNum(metal.inr_per_gram_silver) != null ? inr(envNum(metal.inr_per_gram_silver)! * 100) : "—"}
+                      </div>
+                      <div className="muted text-[10px] mt-0.5">per 100 gram</div>
+                    </div>
+                    <div className="card p-3">
+                      <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em]">999 Silver · ₹ per 10 g</div>
                       <div className="knum text-[22px] font-black mt-1">{envNum(metal.inr_per_10g_silver) != null ? inr(envNum(metal.inr_per_10g_silver)) : "—"}</div>
-                      <div className="muted text-[10px] mt-0.5">raw metal, before GST</div>
+                      <div className="muted text-[10px] mt-0.5">per 10 gram</div>
                     </div>
                   </>
                 )}
+                <div className="card p-3">
+                  <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em]">Day change</div>
+                  <div className={`knum text-[22px] font-black mt-1 ${(envNum(metal.changepct) || 0) >= 0 ? "text-up" : "text-down"}`}>
+                    {envNum(metal.changepct) != null ? pct(envNum(metal.changepct)) : "—"}
+                  </div>
+                  <div className="muted text-[10px] mt-0.5">
+                    {(() => {
+                      const now = isGold ? envNum(metal.inr_per_10g_24k) : envNum(metal.inr_per_kg_silver);
+                      const prev = intraday?.prevClose;
+                      if (now == null || prev == null) return "vs previous close";
+                      const move = now - prev;
+                      return `${move >= 0 ? "+" : "−"}${inr(Math.abs(move))} ${isGold ? "per 10 g" : "per kg"}`;
+                    })()}
+                  </div>
+                </div>
               </div>
 
               {detail && (
                 <>
                   <div className="card p-4 mb-4">
                     <LineChart
-                      points={((detail.chart || detail.history) || []).map((h: any) => ({
+                      points={(detail.chart || []).map((h: any) => ({
                         date: h.date, close: h.close, open: h.open, high: h.high, low: h.low,
                       }))}
                       intradayPoints={intradayPoints}
                       intradaySource={intraday?.source}
                       prevClose={intraday?.prevClose}
                       height={340} defaultRange="1D"
-                      title={`${metal.name} · price (${detail.chart_unit || "₹"})`}
+                      valuePrefix="₹"
+                      title={`${metal.name} · price (${detail.chart_unit || "₹ per gram"})`}
                     />
                   </div>
 
@@ -308,67 +303,10 @@ export default function CommodityDesk() {
             )}
           </section>
 
-          <section className="mt-8 grid lg:grid-cols-[380px_1fr] gap-3">
-            <div className="card p-4">
-              <div className="text-[13px] font-bold">Physical vs ETF vs SGB</div>
-              <p className="muted text-[11px] mt-0.5 leading-relaxed">
-                Same gold CAGR for all three; the difference is making charges, GST,
-                TER and the SGB coupon.
-              </p>
-              <div className="grid grid-cols-2 gap-2 mt-3">
-                {[
-                  ["Grams", grams, setGrams], ["Years", years, setYears],
-                  ["Gold CAGR %", cagr, setCagr], ["Making charge %", making, setMaking],
-                  ["Tax slab %", slab, setSlab],
-                ].map(([l, v, set]: any) => (
-                  <label key={l} className="block">
-                    <span className="muted text-[9px] font-bold uppercase tracking-wider">{l}</span>
-                    <input value={v} onChange={(e) => set(e.target.value)} inputMode="decimal"
-                           className="surface rounded-lg w-full mt-0.5 px-2 py-1.5 text-[11.5px] knum"
-                           style={{ color: "var(--ink)" }} />
-                  </label>
-                ))}
-              </div>
-              <button onClick={runWealth} className="btn-primary w-full justify-center !py-2 !text-[12px] mt-2">
-                Compare 1–8 year wealth
-              </button>
-              {wErr && <p className="text-[11px] text-down mt-1">{wErr}</p>}
-            </div>
-            <div className="card p-4">
-              <div className="text-[13px] font-bold mb-2">Wealth outcome</div>
-              {!wealth && <p className="muted text-[12px]">Run the comparison.</p>}
-              {wealth && (
-                <>
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[560px] border-collapse text-[11.5px]">
-                      <thead>
-                        <tr style={{ background: "var(--surface-2)" }}>
-                          <th className="table-head text-left px-2.5 py-2">Vehicle</th>
-                          <th className="table-head text-right px-2.5 py-2">Outlay</th>
-                          <th className="table-head text-right px-2.5 py-2">Fees/tax</th>
-                          <th className="table-head text-right px-2.5 py-2">End value</th>
-                          <th className="table-head text-right px-2.5 py-2">CAGR</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {wealth.rows.map((r: any) => (
-                          <tr key={r.vehicle} className="table-row">
-                            <td className="px-2.5 py-2 font-semibold">{r.vehicle}</td>
-                            <td className="px-2.5 py-2 text-right knum">{inr(r.outlay)}</td>
-                            <td className="px-2.5 py-2 text-right knum text-down">{inr(r.fees)}</td>
-                            <td className="px-2.5 py-2 text-right knum font-bold">{inr(r.end_value)}</td>
-                            <td className={`px-2.5 py-2 text-right knum font-bold ${r.effective_cagr_pct >= 0 ? "text-up" : "text-down"}`}>
-                              {r.effective_cagr_pct.toFixed(2)}%
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  <p className="muted text-[10.5px] mt-2 leading-relaxed">{wealth.note}</p>
-                </>
-              )}
-            </div>
+          <section className="mt-8">
+            <SectionTitle title="Gold & Silver money calculator"
+                        sub="Invest by rupee amount or by weight. Compare physical metal, ETFs, SGB and silver FoF in ₹ — including grams bought, charges lost and projected net profit." />
+            <GoldSilverCalculator />
           </section>
         </>
       )}

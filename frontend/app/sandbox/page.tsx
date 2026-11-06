@@ -64,6 +64,33 @@ type Summary = {
 type HistoryPoint = { date: string; equity_value: number; realized_cum: number; open_market_value: number };
 type History = { start?: string; points: HistoryPoint[]; note: string };
 type Watch = { symbol: string; name: string; kind: string; last: number | null; changepct: number | null; href: string };
+type Pick = { kind: string; symbol: string; name: string; label: string; sublabel?: string; price?: number | null; aliases?: string };
+type Quote = {
+  asset_class: string; symbol: string; name: string; kind: string;
+  price: number; quantity: number; lot_size: number; lots: number | null;
+  value: number; charges: number; cash_available: number; cash_after: number;
+  source: string;
+};
+
+const FNO_KEY: Record<string, string> = {
+  "NIFTY 50": "NIFTY", "NIFTY BANK": "BANKNIFTY", "BANK NIFTY": "BANKNIFTY",
+  "SENSEX": "SENSEX", "NIFTY IT": "NIFTYIT", "NIFTY NEXT 50": "NIFTYNXT50",
+  "NIFTY FIN SERVICE": "FINNIFTY", "NIFTY MIDCAP 100": "MIDCPNIFTY",
+};
+const fnoKey = (s: string) => FNO_KEY[s.trim().toUpperCase()] || s.trim().toUpperCase();
+
+const QUICK: { label: string; value: string; kind: "INDEX" | "EQUITY" }[] = [
+  { label: "NIFTY 50", value: "NIFTY 50", kind: "INDEX" },
+  { label: "SENSEX", value: "SENSEX", kind: "INDEX" },
+  { label: "BANK NIFTY", value: "NIFTY BANK", kind: "INDEX" },
+  { label: "RELIANCE", value: "RELIANCE", kind: "EQUITY" },
+  { label: "PARAS (Paras Defence)", value: "PARAS", kind: "EQUITY" },
+  { label: "TCS", value: "TCS", kind: "EQUITY" },
+  { label: "HDFCBANK", value: "HDFCBANK", kind: "EQUITY" },
+  { label: "ZOMATO", value: "ZOMATO", kind: "EQUITY" },
+  { label: "GOLDBEES", value: "GOLDBEES", kind: "EQUITY" },
+  { label: "SILVERBEES", value: "SILVERBEES", kind: "EQUITY" },
+];
 
 const TIPS: Record<string, Tip> = {
   corpus: {
@@ -143,6 +170,12 @@ export default function SandboxPage() {
   const [sym, setSym] = useState("RELIANCE");
   const [side, setSide] = useState<"BUY" | "SELL">("BUY");
   const [qty, setQty] = useState(1);
+  const [category, setCategory] = useState<"EQUITY" | "INDEX" | "FNO">("EQUITY");
+  const [pickerQ, setPickerQ] = useState("RELIANCE");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [preload, setPreload] = useState<Pick[]>([]);
+  const [quote, setQuote] = useState<Quote | null>(null);
+  const [quoteBusy, setQuoteBusy] = useState(false);
 
   // F&O ticket
   const [ticket, setTicket] = useState<"EQUITY" | "DERIVATIVE">("EQUITY");
@@ -163,13 +196,77 @@ export default function SandboxPage() {
   };
   useEffect(load, []);
 
+  // <20 ms client-side preload index: 2,401 equities + 51 ETFs + indices.
+  useEffect(() => {
+    getJSON("/search/preload")
+      .then((d) => setPreload((d.items || []).filter((x: Pick) =>
+        ["EQUITY", "ETF", "INDEX"].includes(x.kind))))
+      .catch(() => {});
+  }, []);
+
+  const suggestions = useMemo(() => {
+    const needle = pickerQ.trim().toLowerCase();
+    if (!needle) return [];
+    return preload.filter((x) => {
+      const hay = `${x.symbol} ${x.name} ${x.label} ${x.aliases || ""}`.toLowerCase();
+      return hay.includes(needle);
+    }).sort((a, b) => {
+      const as = a.symbol.toLowerCase().startsWith(needle) ? 0 : 1;
+      const bs = b.symbol.toLowerCase().startsWith(needle) ? 0 : 1;
+      return as - bs || a.symbol.localeCompare(b.symbol);
+    }).slice(0, 9);
+  }, [pickerQ, preload]);
+
+  const chooseCategory = (c: "EQUITY" | "INDEX" | "FNO") => {
+    setCategory(c);
+    setQuote(null);
+    if (c === "EQUITY") {
+      setTicket("EQUITY");
+      setSym("RELIANCE"); setPickerQ("RELIANCE");
+    } else if (c === "INDEX") {
+      setTicket("DERIVATIVE");
+      setOptType("FUT"); setUnderlying("NIFTY");
+      setPickerQ("NIFTY 50");
+    } else {
+      setTicket("DERIVATIVE");
+      setOptType("CE");
+      setPickerQ("");
+    }
+  };
+
+  const pick = (it: Pick) => {
+    setPickerOpen(false);
+    setQuote(null);
+    setPickerQ(it.label || it.symbol);
+    if (it.kind === "INDEX") {
+      setCategory("INDEX"); setTicket("DERIVATIVE"); setOptType("FUT");
+      setUnderlying(fnoKey(it.symbol));
+    } else if (category === "FNO") {
+      setUnderlying(it.symbol);
+    } else {
+      setCategory("EQUITY"); setTicket("EQUITY"); setSym(it.symbol);
+    }
+  };
+
+  const quickPick = (q: { value: string; kind: "INDEX" | "EQUITY" }) => {
+    setQuote(null);
+    setPickerQ(q.value);
+    if (q.kind === "INDEX") {
+      setCategory("INDEX"); setTicket("DERIVATIVE"); setOptType("FUT");
+      setUnderlying(fnoKey(q.value));
+    } else {
+      setCategory("EQUITY"); setTicket("EQUITY");
+      setSym(q.value);
+    }
+  };
+
   // Pull the live chain so the ticket offers real expiries, strikes and spot.
   useEffect(() => {
     if (ticket !== "DERIVATIVE") return;
     let live = true;
     setChainBusy(true);
     setChainErr(null);
-    getJSON(`/fno/${encodeURIComponent(underlying.trim().toUpperCase())}`)
+    getJSON(`/fno/${encodeURIComponent(fnoKey(underlying))}`)
       .then((d) => {
         if (!live) return;
         setChain(d);
@@ -188,6 +285,34 @@ export default function SandboxPage() {
   }, [ticket, underlying]);
 
   const spot = useMemo(() => Number(chain?.underlyingValue ?? chain?.spot?.value ?? NaN), [chain]);
+
+  // Live order-cost preview before the user clicks Buy/Sell.
+  useEffect(() => {
+    let live = true;
+    const body: any = { side, asset_class: ticket };
+    if (ticket === "EQUITY") {
+      body.symbol = sym.trim();
+      body.quantity = qty;
+    } else {
+      body.underlying = underlying.trim();
+      body.option_type = optType;
+      body.lots = lots;
+      if (optType !== "FUT") {
+        if (strike !== "") body.strike = Number(strike);
+        body.expiry = expiry || null;
+      } else if (futPrice !== "") {
+        body.price = Number(futPrice);
+      }
+    }
+    const timer = setTimeout(() => {
+      setQuoteBusy(true);
+      postJSON("/sandbox/quote", body)
+        .then((r) => { if (live) setQuote(r); })
+        .catch(() => { if (live) setQuote(null); })
+        .finally(() => { if (live) setQuoteBusy(false); });
+    }, 250);
+    return () => { live = false; clearTimeout(timer); };
+  }, [ticket, sym, qty, side, underlying, optType, strike, expiry, lots, futPrice]);
 
   const placeEquity = async () => {
     setMsg(null); setErr(null); setBusy(true);
@@ -299,6 +424,88 @@ export default function SandboxPage() {
         }
       />
 
+      {/* 3-step beginner guide */}
+      <div className="card p-3.5 mb-3">
+        <div className="grid sm:grid-cols-3 gap-2">
+          {[
+            ["1", "Pick an Index, Share, or Option", "Search all 2,401 NSE shares, 51 ETFs, indices and F&O contracts."],
+            ["2", "Choose Buy/Sell & Quantity", "Long (Tezi) or Short (Mandi), then check the live cost preview."],
+            ["3", "Practise Risk-Free", "₹10,00,000 virtual cash — no KYC, no broker, no real money."],
+          ].map(([n, t, s]) => (
+            <div key={n} className="flex items-start gap-2.5 rounded-lg px-3 py-2"
+                 style={{ border: "1px solid var(--line)", background: "var(--surface-2)" }}>
+              <span className="grid place-items-center h-6 w-6 rounded-full text-[11px] font-black shrink-0"
+                    style={{ background: "var(--accent)", color: "#041018" }}>{n}</span>
+              <div>
+                <div className="text-[12px] font-bold">{t}</div>
+                <div className="muted text-[10.5px] leading-snug mt-0.5">{s}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* category + quick picks + instant search */}
+      <div className="card p-3.5 mb-3 space-y-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {([
+            ["EQUITY", "📈 Shares & ETFs (2,450+)"],
+            ["INDEX", "📊 Indices (Nifty 50 / Sensex / Bank Nifty)"],
+            ["FNO", "⚡ F&O Options (Call / Put)"],
+          ] as const).map(([k, label]) => (
+            <button key={k} onClick={() => chooseCategory(k)}
+                    className={`chip !text-[11px] !px-3 !py-1.5 ${category === k ? "chip-active" : ""}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="relative">
+          <label className="block">
+            <span className="muted text-[9px] font-bold uppercase tracking-[0.13em] block mb-1">
+              Instant search — symbol or company name
+            </span>
+            <input value={pickerQ}
+                   onChange={(e) => {
+                     setPickerQ(e.target.value); setPickerOpen(true);
+                     if (category === "EQUITY") setSym(e.target.value.toUpperCase());
+                     if (category === "FNO") setUnderlying(e.target.value.toUpperCase());
+                   }}
+                   onFocus={() => setPickerOpen(true)}
+                   placeholder="Try “Paras Defence”, “Silver”, “Nifty” or “Sensex”…"
+                   className="surface rounded-lg px-3 py-2 w-full text-[13px]"
+                   style={{ color: "var(--ink)" }} />
+          </label>
+          {pickerOpen && suggestions.length > 0 && (
+            <div className="absolute z-40 mt-1 w-full max-h-[280px] overflow-auto rounded-lg p-1.5"
+                 style={{ background: "var(--surface)", border: "1px solid var(--line)", boxShadow: "0 12px 32px rgba(0,0,0,.2)" }}>
+              {suggestions.map((it) => (
+                <button key={`${it.kind}-${it.symbol}`} onClick={() => pick(it)}
+                        className="w-full text-left rounded-md px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+                        style={{ background: "transparent" }}>
+                  <span className="chip !text-[8.5px] shrink-0">{it.kind}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[12px] font-semibold truncate">{it.symbol}</span>
+                    <span className="block muted text-[10px] truncate">{it.name}</span>
+                  </span>
+                  {it.price != null && <span className="knum text-[11px]">{inr(it.price)}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="muted text-[9.5px] font-bold uppercase tracking-[0.13em] mr-1">1-click trade</span>
+          {QUICK.map((q) => (
+            <button key={q.label} onClick={() => quickPick(q)}
+                    className={`chip !text-[10px] ${pickerQ.toUpperCase() === q.value ? "chip-active" : ""}`}>
+              {q.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div
         className="rounded-xl px-4 py-2.5 mb-4"
         style={{
@@ -401,7 +608,7 @@ export default function SandboxPage() {
                          className="surface rounded-lg px-3 py-2 knum w-24 text-[13px]" style={{ color: "var(--ink)" }} />
                 </label>
                 <button onClick={placeEquity} disabled={busy} className="btn-primary !py-2 !text-[12.5px]">
-                  {busy ? "Filling…" : `Paper ${side}`}
+                  {busy ? "Filling…" : side === "BUY" ? "Buy / Long (Tezi)" : "Sell / Short (Mandi)"}
                 </button>
               </>
             ) : (
@@ -441,7 +648,7 @@ export default function SandboxPage() {
                   <label className="block">
                     <span className="muted text-[9px] font-bold uppercase tracking-[0.13em] block mb-1">Futures price</span>
                     <input type="number" value={futPrice} onChange={(e) => setFutPrice(e.target.value === "" ? "" : Number(e.target.value))}
-                           placeholder="required"
+                           placeholder="optional · spot"
                            className="surface rounded-lg px-3 py-2 knum w-28 text-[13px]" style={{ color: "var(--ink)" }} />
                   </label>
                 )}
@@ -451,9 +658,47 @@ export default function SandboxPage() {
                          className="surface rounded-lg px-3 py-2 knum w-20 text-[13px]" style={{ color: "var(--ink)" }} />
                 </label>
                 <button onClick={placeFno} disabled={busy} className="btn-primary !py-2 !text-[12.5px]">
-                  {busy ? "Filling…" : `Paper ${side}`}
+                  {busy ? "Filling…" : side === "BUY" ? "Buy / Long (Tezi)" : "Sell / Short (Mandi)"}
                 </button>
               </>
+            )}
+          </div>
+
+          {/* live order cost & charges preview */}
+          <div className="mt-3 rounded-lg p-3"
+               style={{ border: "1px solid color-mix(in srgb, var(--accent) 30%, var(--line))",
+                        background: "color-mix(in srgb, var(--accent) 5%, transparent)" }}>
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <span className="text-[10px] font-black uppercase tracking-[0.13em] accent">Order cost &amp; charges preview</span>
+              {quoteBusy && <span className="muted text-[10px]">pricing…</span>}
+            </div>
+            {quote ? (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div>
+                  <div className="muted text-[9px] uppercase tracking-wider">Instrument</div>
+                  <div className="text-[11.5px] font-bold truncate">{quote.symbol}</div>
+                  <div className="muted text-[9.5px] truncate">{quote.name}</div>
+                </div>
+                <div>
+                  <div className="muted text-[9px] uppercase tracking-wider">Fill price · qty</div>
+                  <div className="knum text-[11.5px] font-bold">{inr(quote.price)} × {num(quote.quantity, 0)}</div>
+                  <div className="muted text-[9.5px] truncate">{quote.lot_size > 1 ? `${quote.lots} lot(s) × ${quote.lot_size}` : quote.source}</div>
+                </div>
+                <div>
+                  <div className="muted text-[9px] uppercase tracking-wider">Investment amount</div>
+                  <div className="knum text-[11.5px] font-bold">{inr(quote.value)}</div>
+                  <div className="muted text-[9.5px]">brokerage/STT {inr(quote.charges)}</div>
+                </div>
+                <div>
+                  <div className="muted text-[9px] uppercase tracking-wider">Remaining virtual cash</div>
+                  <div className="knum text-[11.5px] font-bold" style={{ color: quote.cash_after >= 0 ? "var(--up)" : "var(--down)" }}>
+                    {inr(quote.cash_after)}
+                  </div>
+                  <div className="muted text-[9.5px]">from {inr(quote.cash_available)}</div>
+                </div>
+              </div>
+            ) : (
+              <p className="muted text-[11px]">Pick an instrument to see the fill value, statutory charges and cash left before you place the order.</p>
             )}
           </div>
 
@@ -468,8 +713,9 @@ export default function SandboxPage() {
             </div>
           )}
           <Note>
-            Option fills are rejected rather than invented when the chain does not answer. Futures have no stored
-            free feed, so the fill price is the one you type — it is labelled as caller-supplied.
+            Options fill from the live NSE chain and are rejected rather than invented when it does not answer.
+            Index futures fall back to the live index spot and are labelled as a spot proxy; you can override
+            the fill price above. All 2,401 NSE shares and 51 ETFs resolve by symbol or company name.
           </Note>
         </Panel>
 

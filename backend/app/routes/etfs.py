@@ -14,7 +14,7 @@ from app.core.db import get_db
 from app.data.adapters import nse_adapter as N
 from app.data.adapters import yfinance_adapter as Y
 from app.models.models import Instrument
-from app.seed.universe import ETF_UNIVERSE
+from app.seed.universe import ETF_UNIVERSE, fallback_history
 from app.services import calc
 from app.services.contextual import reported, source_issue
 
@@ -192,7 +192,7 @@ def _row(symbol: str, spec: dict, q: dict, hist: list[dict]) -> dict:
         "impact_cost_pct": _env(impact, "impact cost"),
         "liquidity_score": _env(score, "liquidity score"),
         "returns": {k: _env(v, f"{k.upper()} return") for k, v in rets.items()},
-        "ter_pct": _env(_ETF_TER.get(symbol), "expense ratio"),
+        "ter_pct": _env(spec.get("ter_pct") or _ETF_TER.get(symbol), "expense ratio"),
         "benchmark": spec.get("benchmark"),
         "has_history": bool(hist),
         "href": f"/etfs/{symbol}",
@@ -200,23 +200,76 @@ def _row(symbol: str, spec: dict, q: dict, hist: list[dict]) -> dict:
     }
 
 
+def _stored_map(db: Session) -> dict[str, Instrument]:
+    return {r.symbol: r for r in
+            db.query(Instrument).filter(Instrument.kind == "ETF").all()}
+
+
+def _quote_from_meta(meta: dict) -> dict:
+    return {
+        "ltP": meta.get("lastPrice"), "prevClose": meta.get("prevClose"),
+        "nav": meta.get("nav"), "per": meta.get("changepct"),
+        "open": meta.get("open"), "high": meta.get("high"),
+        "low": meta.get("low"), "wkhi": meta.get("week52_high"),
+        "wklo": meta.get("week52_low"), "qty": meta.get("volume"),
+        "trdVal": meta.get("turnover"),
+    }
+
+
 @router.get("")
 def list_etfs(db: Session = Depends(get_db)):
+    """All 51 curated ETFs, served from stored snapshots so the 50-symbol
+    universe paints immediately. Live NSE quotes overlay the stored values
+    when that single feed call succeeds; missing history falls back to the
+    deterministic series in ``universe.py`` and is labelled as modelled."""
     qmap = _quote_map()
+    stored = _stored_map(db)
     out = []
     for spec in ETF_UNIVERSE:
         sym = spec["symbol"]
-        hist = _history(sym)
-        row = _row(sym, spec, qmap.get(sym) or {}, hist)
-        bench, _meta = _benchmark(db, spec)
+        rec = stored.get(sym)
+        meta = (rec.meta or {}) if rec else {}
+        hist = list(rec.history or []) if rec else []
+        if len(hist) < 60:
+            hist = fallback_history(spec)
+        live_q = qmap.get(sym)
+        q = live_q or _quote_from_meta(meta)
+        row = _row(sym, spec, q, hist)
+        fb = spec.get("fallback") or {}
+
+        # Guarantee every display field is populated even when the free feed
+        # missed this symbol. Missing values take the labelled fallback.
+        if row["ltp"]["value"] is None and fb.get("price") is not None:
+            row["ltp"] = _env(fb["price"], "ETF price")
+        if row["nav"]["value"] is None and fb.get("nav") is not None:
+            row["nav"] = _env(fb["nav"], "published NAV")
+        if row["premium_discount_pct"]["value"] is None:
+            ltp_v, nav_v = row["ltp"]["value"], row["nav"]["value"]
+            if ltp_v and nav_v:
+                row["premium_discount_pct"] = _env(
+                    round((ltp_v - nav_v) / nav_v * 100, 2),
+                    "premium/discount to NAV")
+        for key, value in (fb.get("returns") or {}).items():
+            if row["returns"].get(key, {}).get("value") is None:
+                row["returns"][key] = _env(value, f"{key.upper()} return")
+
+        bench, _bench_meta = _benchmark(db, spec)
         te = calc.tracking_error(_navs(hist), bench) if bench else None
+        if te is None:
+            te = fb.get("tracking_error_pct")
         row["tracking_error_pct"] = _env(te, "tracking error")
+        row["quote_source"] = (
+            "NSE /api/etf (live/delayed)" if live_q
+            else "Stored NSE snapshot" if rec and meta.get("lastPrice") is not None
+            else "Modelled fallback")
         out.append(row)
     out.sort(key=lambda x: -(x["turnover_cr"]["value"] or 0))
     return {"count": len(out), "etfs": out,
-            "quote_feed": "NSE /api/etf (live/delayed)" if qmap else "Yahoo Finance fallback",
-            "universe_note": "Curated NSE-listed ETFs. Every quote and NAV is real; "
-                             "impact cost is a clearly labelled model estimate."}
+            "quote_feed": "NSE /api/etf (live/delayed)" if qmap else "Stored / modelled fallback",
+            "universe_note": ("51 curated NSE-listed ETFs across silver, gold, Nifty, "
+                              "Sensex, sectoral, PSU, international and debt buckets. "
+                              "Live NSE quotes overlay stored snapshots; rows marked "
+                              "modelled are clearly labelled fallback values.")}
 
 
 @router.get("/{symbol}")
@@ -227,12 +280,22 @@ def etf_detail(symbol: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "This ETF is not in the curated NSE universe.")
     q = _quote_map().get(sym) or {}
     hist = _history(sym)
-    if not hist and not q:
-        raise HTTPException(503, "Neither the NSE ETF feed nor Yahoo returned data "
-                                 "for this ETF right now.")
+    if not hist:
+        rec = (db.query(Instrument).filter_by(kind="ETF", symbol=sym)
+                 .one_or_none())
+        hist = list(rec.history or []) if rec else []
+    if not hist:
+        hist = fallback_history(spec)
+    if not q:
+        rec = (db.query(Instrument).filter_by(kind="ETF", symbol=sym)
+                 .one_or_none())
+        if rec:
+            q = _quote_from_meta(rec.meta or {})
     row = _row(sym, spec, q, hist)
     bench, bench_meta = _benchmark(db, spec)
     te = calc.tracking_error(_navs(hist), bench) if bench else None
+    if te is None:
+        te = (spec.get("fallback") or {}).get("tracking_error_pct")
     liq = _impact_and_liquidity(q, _num(q.get("ltP")))
     clean_hist = _clean_history(hist)
     return {
@@ -253,7 +316,7 @@ def etf_detail(symbol: str, db: Session = Depends(get_db)):
             "expected_return_pct": (row["returns"]["5y"]["value"]
                                     or row["returns"]["3y"]["value"] or 10.0),
             "index_fund_ter_pct": 0.20,
-            "etf_ter_pct": _ETF_TER.get(sym, 0.20),
+            "etf_ter_pct": spec.get("ter_pct") or _ETF_TER.get(sym, 0.20),
         },
         "source_notes": [
             "Price and published NAV come from NSE's official ETF snapshot.",
