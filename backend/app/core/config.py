@@ -27,8 +27,14 @@ DB_URL = f"sqlite:///{DB_PATH}"
 
 BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8001"))
 
-# CORS: local Next.js dev server
+# CORS: local Next.js dev server, plus any deployed frontend origins.
+# Set CORS_ORIGINS="https://app.pages.dev,https://custom.domain" on Render.
 CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+CORS_ORIGINS += [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
 
 # ---------------------------------------------------------------------------
 # Third-party credentials (never log these; read through these accessors).

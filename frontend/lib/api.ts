@@ -1,4 +1,8 @@
-export const API = "/bff/api/v1";
+// Same-origin proxy by default (local dev, or any host that can rewrite).
+// Set NEXT_PUBLIC_API_URL at build time when the host cannot proxy to the API
+// (e.g. Cloudflare Pages) so the browser calls the Render backend directly.
+const API_ORIGIN = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/+$/, "");
+export const API = API_ORIGIN ? `${API_ORIGIN}/api/v1` : "/bff/api/v1";
 
 export type Env<T = any> = {
   value: T | null;

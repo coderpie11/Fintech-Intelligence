@@ -1,10 +1,24 @@
+/**
+ * Backend origin for the `/bff` proxy.
+ *
+ * Rewrites are baked into the routes manifest at build time, so set the
+ * variable when building for production (Cloudflare Pages):
+ *   NEXT_PUBLIC_API_URL=https://fintech-intelligence-backend.onrender.com
+ * Falls back to the local FastAPI port so `npm run dev` is unchanged.
+ */
+const API_BASE = (
+  process.env.API_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  "http://127.0.0.1:8001"
+).replace(/\/+$/, "");
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   async rewrites() {
     return [
       {
         source: "/bff/:path*",
-        destination: "http://127.0.0.1:8001/:path*",
+        destination: `${API_BASE}/:path*`,
       },
     ];
   },
