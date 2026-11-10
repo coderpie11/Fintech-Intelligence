@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -30,6 +30,13 @@ from app.services import calc
 from app.services.contextual import reported
 
 router = APIRouter(tags=["sandbox"])
+
+
+def client_id(x_client_id: str | None = Header(default=None,
+                                              alias="X-Client-ID")) -> str:
+    """Per-browser identity; absent header keeps the seeded `default` book."""
+    return (x_client_id or "default").strip()[:64] or "default"
+
 
 STARTING_CASH = 1_000_000  # ₹10,00,000 virtual, zero-KYC (per spec)
 
@@ -267,8 +274,10 @@ def _mark_order(o: SandboxOrder, db: Session, chain_cache: dict) -> tuple[float 
 # Summary / portfolio
 # ---------------------------------------------------------------------------
 
-def _summary(db: Session) -> dict:
-    orders = db.query(SandboxOrder).order_by(SandboxOrder.opened_at).all()
+def _summary(db: Session, cid: str = "default") -> dict:
+    orders = (db.query(SandboxOrder)
+                .filter(SandboxOrder.client_id == cid)
+                .order_by(SandboxOrder.opened_at).all())
     chain_cache: dict = {}
     cash = float(STARTING_CASH)
     realized = 0.0
@@ -372,12 +381,13 @@ def _summary(db: Session) -> dict:
 
 
 @router.get("/sandbox/summary")
-def summary(db: Session = Depends(get_db)):
-    return _summary(db)
+def summary(cid: str = Depends(client_id), db: Session = Depends(get_db)):
+    return _summary(db, cid)
 
 
 @router.get("/sandbox/history")
-def portfolio_history(db: Session = Depends(get_db)):
+def portfolio_history(cid: str = Depends(client_id),
+                      db: Session = Depends(get_db)):
     """Event-based equity curve reconstructed from stored closes.
 
     The platform does not keep a daily mark for every sandbox leg, so the
@@ -385,7 +395,9 @@ def portfolio_history(db: Session = Depends(get_db)):
     are re-marked from stored daily closes; derivative legs are carried at fill
     premium until the current mark. That limitation is stated in the payload.
     """
-    orders = db.query(SandboxOrder).order_by(SandboxOrder.opened_at).all()
+    orders = (db.query(SandboxOrder)
+                .filter(SandboxOrder.client_id == cid)
+                .order_by(SandboxOrder.opened_at).all())
     if not orders:
         return {"points": [], "note": "No sandbox activity yet."}
     first = orders[0].opened_at or datetime.utcnow()
@@ -460,9 +472,9 @@ def portfolio_history(db: Session = Depends(get_db)):
     }
 
 
-def _quote_fill(payload: QuoteIn, db: Session) -> dict:
+def _quote_fill(payload: QuoteIn, db: Session, cid: str = "default") -> dict:
     """Price one prospective leg without writing to the ledger."""
-    cash = float(_summary(db).get("cash_available") or STARTING_CASH)
+    cash = float(_summary(db, cid).get("cash_available") or STARTING_CASH)
     if payload.asset_class == "EQUITY":
         if not payload.quantity:
             raise HTTPException(422, "quantity is required for a quote")
@@ -518,12 +530,14 @@ def _quote_fill(payload: QuoteIn, db: Session) -> dict:
 
 
 @router.post("/sandbox/quote")
-def quote_order(payload: QuoteIn, db: Session = Depends(get_db)):
-    return _quote_fill(payload, db)
+def quote_order(payload: QuoteIn, cid: str = Depends(client_id),
+                db: Session = Depends(get_db)):
+    return _quote_fill(payload, db, cid)
 
 
 @router.post("/sandbox/orders")
-def place_order(payload: OrderIn, db: Session = Depends(get_db)):
+def place_order(payload: OrderIn, cid: str = Depends(client_id),
+                db: Session = Depends(get_db)):
     if payload.asset_class == "EQUITY":
         if not payload.quantity:
             raise HTTPException(422, "quantity is required for an equity order")
@@ -538,7 +552,7 @@ def place_order(payload: OrderIn, db: Session = Depends(get_db)):
         o = SandboxOrder(symbol=symbol[:32], side=payload.side,
                          quantity=payload.quantity, entry_price=mark,
                          note=payload.note, status="OPEN", asset_class="EQUITY",
-                         charges=charges)
+                         charges=charges, client_id=cid)
         db.add(o)
         db.commit()
         return {"id": o.id, "asset_class": "EQUITY",
@@ -587,7 +601,7 @@ def place_order(payload: OrderIn, db: Session = Depends(get_db)):
         note=payload.note, status="OPEN", asset_class="DERIVATIVE",
         underlying=underlying, option_type=payload.option_type,
         strike=payload.strike, expiry=payload.expiry, lot_size=lot_size,
-        lots=payload.lots, charges=charges)
+        lots=payload.lots, charges=charges, client_id=cid)
     db.add(o)
     db.commit()
     return {"id": o.id, "asset_class": "DERIVATIVE", "label": label,
@@ -598,8 +612,11 @@ def place_order(payload: OrderIn, db: Session = Depends(get_db)):
 
 
 @router.post("/sandbox/orders/{oid}/close")
-def close_order(oid: int, db: Session = Depends(get_db)):
-    o = db.get(SandboxOrder, oid)
+def close_order(oid: int, cid: str = Depends(client_id),
+                db: Session = Depends(get_db)):
+    o = (db.query(SandboxOrder)
+           .filter(SandboxOrder.id == oid,
+                   SandboxOrder.client_id == cid).one_or_none())
     if not o:
         raise HTTPException(404, "order not found")
     if o.status == "CLOSED":
@@ -629,8 +646,11 @@ def close_order(oid: int, db: Session = Depends(get_db)):
 
 
 @router.delete("/sandbox/orders/{oid}")
-def delete_order(oid: int, db: Session = Depends(get_db)):
-    o = db.get(SandboxOrder, oid)
+def delete_order(oid: int, cid: str = Depends(client_id),
+                 db: Session = Depends(get_db)):
+    o = (db.query(SandboxOrder)
+           .filter(SandboxOrder.id == oid,
+                   SandboxOrder.client_id == cid).one_or_none())
     if not o:
         raise HTTPException(404, "order not found")
     db.delete(o)
@@ -673,13 +693,16 @@ def _watch_payload(w: WatchItem, db: Session) -> dict:
 
 
 @router.get("/watchlist")
-def watchlist(db: Session = Depends(get_db)):
-    rows = db.query(WatchItem).order_by(WatchItem.added_at.desc()).all()
+def watchlist(cid: str = Depends(client_id), db: Session = Depends(get_db)):
+    rows = (db.query(WatchItem)
+              .filter(WatchItem.client_id == cid)
+              .order_by(WatchItem.added_at.desc()).all())
     return {"items": [_watch_payload(w, db) for w in rows], "count": len(rows)}
 
 
 @router.post("/watchlist")
-def add_watch(payload: WatchIn = Body(...), db: Session = Depends(get_db)):
+def add_watch(payload: WatchIn = Body(...), cid: str = Depends(client_id),
+              db: Session = Depends(get_db)):
     symbol = payload.symbol.strip().upper()
     kind = payload.kind
     href = payload.href
@@ -695,22 +718,25 @@ def add_watch(payload: WatchIn = Body(...), db: Session = Depends(get_db)):
             href = f"/indices/{slug_for(row)}" if row else None
         else:
             href = f"/stocks/{symbol}"
-    exists = (db.query(WatchItem).filter_by(symbol=symbol).one_or_none())
+    exists = (db.query(WatchItem)
+                .filter_by(symbol=symbol, client_id=cid).one_or_none())
     if exists:
         exists.kind = kind
         exists.href = href or exists.href
         db.commit()
         return {"already": True, "item": _watch_payload(exists, db)}
-    w = WatchItem(symbol=symbol, kind=kind, href=href)
+    w = WatchItem(symbol=symbol, kind=kind, href=href, client_id=cid)
     db.add(w)
     db.commit()
     return {"added": symbol, "item": _watch_payload(w, db)}
 
 
 @router.delete("/watchlist/{symbol}")
-def remove_watch(symbol: str, db: Session = Depends(get_db)):
+def remove_watch(symbol: str, cid: str = Depends(client_id),
+                 db: Session = Depends(get_db)):
     w = (db.query(WatchItem)
-           .filter(WatchItem.symbol == symbol.upper()).one_or_none())
+           .filter(WatchItem.symbol == symbol.upper(),
+                   WatchItem.client_id == cid).one_or_none())
     if not w:
         raise HTTPException(404, "not on the watchlist")
     db.delete(w)
@@ -719,8 +745,10 @@ def remove_watch(symbol: str, db: Session = Depends(get_db)):
 
 
 @router.get("/watchlist/check/{symbol}")
-def check_watch(symbol: str, db: Session = Depends(get_db)):
+def check_watch(symbol: str, cid: str = Depends(client_id),
+                db: Session = Depends(get_db)):
     w = (db.query(WatchItem)
-           .filter(WatchItem.symbol == symbol.upper()).one_or_none())
+           .filter(WatchItem.symbol == symbol.upper(),
+                   WatchItem.client_id == cid).one_or_none())
     return {"symbol": symbol.upper(), "watched": bool(w),
             "kind": w.kind if w else None}

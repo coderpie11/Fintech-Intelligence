@@ -35,6 +35,23 @@ def _today_ist() -> dt.date:
     return dt.datetime.now(IST).date()
 
 
+def latest_completed_session(now: dt.datetime | None = None) -> dt.date:
+    """Most recent weekday whose 15:30 IST session has closed.
+
+    Used by the seeders and market-pulse fallback so a snapshot taken before
+    the close never labels today's incomplete session as final.
+    """
+    now = now or dt.datetime.now(IST)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=IST)
+    day = now.astimezone(IST).date()
+    if now.astimezone(IST).time() < dt.time(15, 30):
+        day -= dt.timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= dt.timedelta(days=1)
+    return day
+
+
 def ticker_for(row: Instrument) -> str | None:
     """Yahoo ticker for an instrument row (equity, index or other)."""
     meta = row.meta or {}

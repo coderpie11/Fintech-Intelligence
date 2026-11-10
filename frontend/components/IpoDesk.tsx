@@ -277,7 +277,7 @@ export function IpoList() {
           </div>
 
           <div className="card overflow-hidden">
-            <div className="overflow-x-auto max-h-[70vh]">
+            <div className="scroll-x max-h-[70vh]">
               <table className="w-full min-w-[1520px] border-collapse">
                 <thead className="sticky top-0 z-10">
                   <tr style={{ background: "var(--surface-2)" }}>
@@ -711,15 +711,68 @@ export function IpoDetail({ slug }: { slug: string }) {
               </div>
             ))}
           </div>
+          {d.preipo_comparison?.signal && (
+            <div className="muted text-[10.5px] mt-2">{d.preipo_comparison.signal}</div>
+          )}
         </div>
 
         <div className="card p-4">
           <div className="text-[13px] font-bold mb-1">Merchant banker (BRLM) track record</div>
-          <p className="muted text-[11px] mb-2">Book-running lead managers named in the offer document. Historical deal counts are not published in the free feed, so they are not invented.</p>
-          <div className="flex flex-wrap gap-1.5">
-            {(d.merchant_bankers || []).map((b: any) => (
-              <span key={b.name} className="chip !text-[10px]">{b.name}</span>
-            ))}
+          <p className="muted text-[11px] mb-2">Deal counts, average listing gain and 1Y survival are computed from this platform&apos;s IPO archive for each named book-running lead manager.</p>
+          <div className="scroll-x">
+            <table className="w-full text-[11.5px]">
+              <thead>
+                <tr className="muted text-[9px] uppercase tracking-wider text-left">
+                  <th className="py-1 pr-2">Manager</th><th className="py-1 pr-2 text-right">Listed/total</th>
+                  <th className="py-1 pr-2 text-right">Avg listing</th><th className="py-1 text-right">1Y survival</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(d.merchant_bankers || []).map((b: any) => (
+                  <tr key={b.name} style={{ borderTop: "1px solid var(--line)" }}>
+                    <td className="py-1.5 pr-2 font-semibold">{b.name}</td>
+                    <td className="py-1.5 pr-2 text-right knum">{b.listed_deals ?? 0}<span className="muted">/{b.deals ?? 0}</span></td>
+                    <td className={`py-1.5 pr-2 text-right knum ${(b.avg_listing_gain_pct ?? 0) >= 0 ? "text-up" : "text-down"}`}>
+                      {b.avg_listing_gain_pct == null ? "—" : pct(b.avg_listing_gain_pct)}
+                    </td>
+                    <td className="py-1.5 text-right knum">{b.survival_1y_pct == null ? "—" : `${b.survival_1y_pct}%`}</td>
+                  </tr>
+                ))}
+                {!(d.merchant_bankers || []).length && (
+                  <tr><td colSpan={4} className="py-2 muted">No named book-running lead manager in the free feed.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section className="mb-6">
+        <div className="card p-4">
+          <div className="text-[13px] font-bold mb-1">Anchor lock-in expiry countdown</div>
+          <p className="muted text-[11px] mb-3">{d.anchor_countdown?.note}</p>
+          <div className="grid sm:grid-cols-2 gap-2">
+            {["30_day", "90_day"].map((k) => {
+              const a = d.anchor_countdown?.[k] || {};
+              const chipStyle = a.status === "active" && a.days_remaining <= 7
+                ? { color: "var(--warn)", borderColor: "color-mix(in srgb, var(--warn) 35%, var(--line))" }
+                : undefined;
+              return (
+                <div key={k} className="rounded-md px-3 py-2.5" style={{ border: "1px solid var(--line)", background: "var(--surface-2)" }}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11.5px] font-bold">{k === "30_day" ? "30-day lock-in" : "90-day lock-in"}</span>
+                    <span className="chip !text-[9px]" style={chipStyle}>{a.status || "unknown"}</span>
+                  </div>
+                  <div className="knum text-[15px] font-black mt-1">{a.expiry || "—"}</div>
+                  <div className="muted text-[10.5px] mt-0.5">
+                    {a.days_remaining == null ? "date unknown"
+                      : a.days_remaining < 0 ? `${Math.abs(a.days_remaining)} days ago`
+                      : `${a.days_remaining} days remaining`}
+                  </div>
+                  <div className="muted text-[10px] mt-1 leading-snug">{a.alert}</div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </section>
@@ -728,7 +781,7 @@ export function IpoDetail({ slug }: { slug: string }) {
         <section className="mb-6">
           <SectionTitle title="Offer-document KPIs" sub="The company's own KPI table from the issue page." />
           <div className="card overflow-hidden">
-            <div className="overflow-x-auto">
+            <div className="scroll-x">
               <table className="w-full min-w-[680px] border-collapse">
                 <thead>
                   <tr style={{ background: "var(--surface-2)" }}>
@@ -758,7 +811,7 @@ export function IpoDetail({ slug }: { slug: string }) {
         <SectionTitle title="Financials — 3-year revenue, PAT and ROE"
                     sub="From the offer document. ROE = PAT ÷ net worth, shown only when both numbers are disclosed." />
         <div className="card overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="scroll-x">
             <table className="w-full min-w-[820px] border-collapse">
               <thead>
                 <tr style={{ background: "var(--surface-2)" }}>
@@ -799,7 +852,7 @@ export function IpoDetail({ slug }: { slug: string }) {
           <SectionTitle title="OFS selling-shareholder exit table"
                       sub="Pre-IPO acquisition cost vs the IPO offer price, with the implied multiple and post-issue holding." />
           <div className="card overflow-hidden">
-            <div className="overflow-x-auto">
+            <div className="scroll-x">
               <table className="w-full min-w-[520px] border-collapse">
                 <thead>
                   <tr style={{ background: "var(--surface-2)" }}>
@@ -833,7 +886,7 @@ export function IpoDetail({ slug }: { slug: string }) {
           <SectionTitle title="Peer valuation comparison"
                       sub="Listed peers from the offer document, or a sector proxy when the offer page has no peer table." />
           <div className="card overflow-hidden">
-            <div className="overflow-x-auto">
+            <div className="scroll-x">
               <table className="w-full min-w-[480px] border-collapse">
                 <thead>
                   <tr style={{ background: "var(--surface-2)" }}>

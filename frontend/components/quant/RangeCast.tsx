@@ -297,7 +297,7 @@ export default function RangeCast() {
                 </div>
                 {d.delivery?.available ? (
                   <>
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                       <Metric label="Delivery today" value={`${num(d.delivery.current, 1)}%`} />
                       <Metric label="45-session mean" value={`${num(d.delivery.mean, 1)}%`} />
                       <Metric label="Z-score" value={signed(d.delivery.z, 2)} tone={(d.delivery.z || 0) >= 0 ? "up" : "down"} />

@@ -217,7 +217,7 @@ function EquityTab() {
         <p className="muted text-[11px] mt-0.5 mb-3">
           FCFF and net cash in ₹ crore; the engine works in ₹ million internally.
         </p>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <Field label="Free Cash Flow (FCFF ₹ cr)" value={fcff} onChange={setFcff} tip={TIPS.fcff} />
           <Field label="Growth % (next 5Y)" value={growth} onChange={setGrowth} tip={TIPS.growth} />
           <Field label="Terminal Growth %" value={terminal} onChange={setTerminal} tip={TIPS.terminal} />
@@ -230,7 +230,7 @@ function EquityTab() {
         {err && <p className="text-[11px] text-down mt-2">{err}</p>}
         {res?.error && <p className="text-[11px] text-down mt-2">{res.error}</p>}
         {res && !res.error && (
-          <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div className="rounded-lg p-3" style={{ background: "var(--surface-2)" }}>
               <div className="muted text-[9px] font-bold uppercase tracking-wider">DCF value per share</div>
               <div className="knum text-[22px] font-black mt-1">{money(res.per_share)}</div>
@@ -263,7 +263,7 @@ function EquityTab() {
           <p className="muted text-[11px] mt-0.5 mb-3">
             STT, exchange, SEBI, stamp, DP and GST on a CNC equity round trip.
           </p>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <Field label="Buy value" value={buy} onChange={setBuy} suffix="₹" />
             <Field label="Sell value" value={sell} onChange={setSell} suffix="₹" />
           </div>
@@ -345,7 +345,7 @@ function FnoTab() {
                     className="chip !text-[10px]">{p.label}</button>
           ))}
         </div>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <Field label="Current Market Price (Spot ₹)" value={s} onChange={setS} tip={TIPS.spot} />
           <Field label="Target Deal Price (Strike ₹)" value={k} onChange={setK} tip={TIPS.strike} />
           <Field label="Days Left till Expiry" value={days} onChange={setDays} step="1" tip={TIPS.days} />
@@ -360,7 +360,7 @@ function FnoTab() {
       <div className="space-y-3">
         {res ? (
           <>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div className="card p-3">
                 <div className="muted text-[9px] font-bold uppercase tracking-wider">
                   <MetricTip label="Call fair price" tip={TIPS.call}>Call Option Fair Price (Tezi / Upside ₹)</MetricTip>
@@ -499,7 +499,7 @@ function MfTab() {
           <div className="text-[13px] font-bold">
             <MetricTip label="LTCG harvest window" tip={TIPS.ltcg}>LTCG harvest window</MetricTip>
           </div>
-          <div className="grid grid-cols-2 gap-2 mt-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
             <Field label="Unrealised gain" value={gain} onChange={setGain} suffix="₹" tip={TIPS.ltcg} />
             <Field label="₹1.25L exemption used" value={used} onChange={setUsed} suffix="₹" tip={TIPS.ltcg} />
           </div>
@@ -523,7 +523,7 @@ function MfTab() {
           <div className="text-[13px] font-bold">
             <MetricTip label="Expense Ratio / TER" tip={TIPS.ter}>MF vs ETF fee drag</MetricTip>
           </div>
-          <div className="grid grid-cols-2 gap-2 mt-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
             <Field label="Amount" value={amount} onChange={setAmount} suffix="₹" />
             <Field label="Years" value={feeYears} onChange={setFeeYears} />
             <Field label="Gross return %" value={gross} onChange={setGross} />
@@ -622,7 +622,7 @@ function BondTab() {
         <div className="card p-4">
           <div className="text-[13px] font-bold">YTM solver</div>
           <p className="muted text-[11px] mt-0.5 mb-3">Find the yield implied by a traded price.</p>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <Field label="Price" value={price} onChange={setPrice} />
             <Field label="Coupon %" value={sCoupon} onChange={setSCoupon} />
             <Field label="Face" value={sFace} onChange={setSFace} />
@@ -702,7 +702,7 @@ function ReitTab() {
             {TRUSTS.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </label>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <Field label="Units" value={units} onChange={setUnits} />
           <Field label="Price / unit" value={price} onChange={setPrice} suffix="₹" />
           <Field label="Distribution / unit" value={dist} onChange={setDist} suffix="₹" tip={TIPS.ndcf} />
@@ -733,7 +733,7 @@ function ReitTab() {
       <div className="space-y-3">
         {res && !res.error ? (
           <>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div className="card p-3">
                 <div className="muted text-[9px] font-bold uppercase tracking-wider">
                   <MetricTip label="NDCF yield" tip={TIPS.ndcf}>NDCF yield (pre-tax)</MetricTip>
@@ -798,7 +798,7 @@ function CorpTab() {
       <div className="grid lg:grid-cols-3 gap-3">
         <div className="card p-4">
           <div className="text-[13px] font-bold">Dividend net in hand</div>
-          <div className="grid grid-cols-2 gap-2 mt-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
             <Field label="Dividend / share" value={dps} onChange={setDps} suffix="₹" />
             <Field label="Shares" value={shares} onChange={setShares} step="1" />
             <Field label="Tax slab %" value={slab} onChange={setSlab} />
@@ -825,7 +825,7 @@ function CorpTab() {
 
         <div className="card p-4">
           <div className="text-[13px] font-bold">Stock split</div>
-          <div className="grid grid-cols-2 gap-2 mt-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
             <Field label="Shares held" value={splitShares} onChange={setSplitShares} step="1" />
             <Field label="Old face value" value={oldFv} onChange={setOldFv} />
             <Field label="New face value" value={newFv} onChange={setNewFv} />
@@ -853,7 +853,7 @@ function CorpTab() {
 
         <div className="card p-4">
           <div className="text-[13px] font-bold">Bonus shares &amp; FIFO tax</div>
-          <div className="grid grid-cols-2 gap-2 mt-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
             <Field label="Original shares" value={bShares} onChange={setBShares} step="1" />
             <Field label="Bonus ratio (num)" value={num} onChange={setNum} step="1" />
             <Field label="Bonus ratio (den)" value={den} onChange={setDen} step="1" />

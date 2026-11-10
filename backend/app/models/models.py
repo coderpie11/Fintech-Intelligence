@@ -129,15 +129,19 @@ class SandboxOrder(Base):
     lot_size: Mapped[int | None]
     lots: Mapped[float | None]
     charges: Mapped[float] = mapped_column(Float, default=0.0)
+    client_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
 
 
 class WatchItem(Base):
     __tablename__ = "watch_items"
+    __table_args__ = (UniqueConstraint("client_id", "symbol",
+                                       name="uq_watch_client_symbol"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    symbol: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
     kind: Mapped[str] = mapped_column(String(12), default="EQUITY")
     href: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    client_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
     added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

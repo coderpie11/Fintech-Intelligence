@@ -431,7 +431,7 @@ export default function BondDesk() {
           </div>
 
           <div className="card overflow-hidden">
-            <div className="overflow-x-auto">
+            <div className="scroll-x">
               <table className="w-full min-w-[1240px] border-collapse">
                 <thead>
                   <tr style={{ background: "var(--surface-2)" }}>

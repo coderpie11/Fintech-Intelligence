@@ -156,7 +156,7 @@ function fundBucket(f: FundRow): string {
 function FundTable({ funds, period }: { funds: FundRow[]; period: PeriodKey }) {
   return (
     <div className="card overflow-hidden">
-      <div className="overflow-x-auto">
+      <div className="scroll-x">
         <table className="w-full min-w-[1500px] border-collapse">
           <thead>
             <tr style={{ background: "var(--surface-2)" }}>
@@ -1170,7 +1170,7 @@ export function FundDetail({ code }: { code: string }) {
                       sub="Direct-Growth schemes in the same category, ranked by 3-year CAGR. Open the drawer for the fee-drag and alpha-wealth comparison."
                       right={<button onClick={() => setDrawer(true)} className="btn-secondary !py-1.5 !text-[11.5px]">Open peer drawer</button>} />
           <div className="card overflow-hidden">
-            <div className="overflow-x-auto">
+            <div className="scroll-x">
               <table className="w-full min-w-[820px] border-collapse">
                 <thead>
                   <tr style={{ background: "var(--surface-2)" }}>

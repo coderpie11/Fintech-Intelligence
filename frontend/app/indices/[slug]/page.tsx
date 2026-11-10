@@ -627,7 +627,7 @@ export default function IndexDetailPage() {
               </p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="scroll-x">
               <table className="w-full min-w-[860px] border-collapse">
                 <thead>
                   <tr>

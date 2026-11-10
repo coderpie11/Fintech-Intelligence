@@ -199,7 +199,7 @@ export default function StockPeerDrawer({
 
         {allPeers.length > 0 && (
           <div className="card overflow-hidden">
-            <div className="overflow-x-auto">
+            <div className="scroll-x">
               <table className="w-full min-w-[660px] border-collapse">
                 <thead>
                   <tr style={{ background: "var(--surface-2)" }}>

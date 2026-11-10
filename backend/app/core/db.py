@@ -53,8 +53,10 @@ def create_all() -> None:
         ("sandbox_orders", "lot_size", "INTEGER"),
         ("sandbox_orders", "lots", "FLOAT"),
         ("sandbox_orders", "charges", "FLOAT DEFAULT 0"),
+        ("sandbox_orders", "client_id", "VARCHAR(64) DEFAULT 'default'"),
         ("watch_items", "kind", "VARCHAR(12) DEFAULT 'EQUITY'"),
         ("watch_items", "href", "VARCHAR(120)"),
+        ("watch_items", "client_id", "VARCHAR(64) DEFAULT 'default'"),
     )
     with engine.begin() as conn:
         for table, column, ddl in additive:
@@ -63,4 +65,55 @@ def create_all() -> None:
             if cols and column not in cols:
                 conn.exec_driver_sql(
                     f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        _rebuild_watch_items_if_needed(conn)
+
+
+def _rebuild_watch_items_if_needed(conn) -> None:
+    """Move the legacy globally-unique watch symbol to (client_id, symbol).
+
+    The first release stored one global watchlist, so `symbol` carried a
+    UNIQUE index. That blocks two browser clients from watching the same
+    symbol. SQLite cannot drop an inline UNIQUE constraint, so rebuild the
+    table once when the legacy index is detected. Data is copied verbatim and
+    existing rows become client `default`.
+    """
+    try:
+        indexes = conn.exec_driver_sql("PRAGMA index_list(watch_items)").fetchall()
+    except Exception:  # noqa: BLE001
+        return
+    legacy = False
+    for row in indexes:
+        if not row[2]:  # not unique
+            continue
+        cols = [r[2] for r in conn.exec_driver_sql(
+            f"PRAGMA index_info({row[1]})").fetchall()]
+        if cols == ["symbol"]:
+            legacy = True
+            break
+    if not legacy:
+        return
+    conn.exec_driver_sql("ALTER TABLE watch_items RENAME TO watch_items_legacy")
+    conn.exec_driver_sql("""
+        CREATE TABLE watch_items (
+            id INTEGER NOT NULL PRIMARY KEY,
+            symbol VARCHAR(32) NOT NULL,
+            kind VARCHAR(12) NOT NULL DEFAULT 'EQUITY',
+            href VARCHAR(120),
+            client_id VARCHAR(64) NOT NULL DEFAULT 'default',
+            added_at DATETIME NOT NULL,
+            CONSTRAINT uq_watch_client_symbol UNIQUE (client_id, symbol)
+        )
+    """)
+    conn.exec_driver_sql("""
+        INSERT INTO watch_items (id, symbol, kind, href, client_id, added_at)
+        SELECT id, symbol, COALESCE(kind, 'EQUITY'), href,
+               COALESCE(client_id, 'default'),
+               COALESCE(added_at, CURRENT_TIMESTAMP)
+        FROM watch_items_legacy
+    """)
+    conn.exec_driver_sql("DROP TABLE watch_items_legacy")
+    conn.exec_driver_sql(
+        "CREATE INDEX ix_watch_items_symbol ON watch_items(symbol)")
+    conn.exec_driver_sql(
+        "CREATE INDEX ix_watch_items_client_id ON watch_items(client_id)")
 

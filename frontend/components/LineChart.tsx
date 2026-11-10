@@ -217,6 +217,22 @@ export default function LineChart({
   const active = hover ?? pinned;
   const activePoint = active != null ? visible[active] : null;
 
+  // Measure the container so the SVG viewBox matches real CSS pixels. Without
+  // this a 1000-unit viewBox is squeezed into ~340px on a phone and every axis
+  // label renders at about a third of its intended size.
+  const [vw, setVw] = useState(0);
+  const ready = visible.length >= 2;
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const apply = () => setVw(el.clientWidth);
+    apply();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ready]);
+
   // Publish the scrubbed candle to the page header (terminal style).
   const hoverPoint = activePoint;
   useEffect(() => {
@@ -244,7 +260,7 @@ export default function LineChart({
     );
   }
 
-  const W = width;
+  const W = Math.max(280, Math.round(vw || width));
   const H = height;
   const pad = { l: 10, r: 62, t: 18, b: 26 };
   const closes = visible.map((p) => p.close);
@@ -318,7 +334,7 @@ export default function LineChart({
   return (
     <div className="w-full">
       {/* ---- pinned header: metrics left, controls top-right ---- */}
-      <div className="flex items-start justify-between gap-4 mb-3">
+      <div className="flex flex-col gap-2.5 sm:flex-row sm:items-start sm:justify-between sm:gap-4 mb-3">
         <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 min-w-0 flex-1">
           {title && <div className="text-[13px] font-bold tracking-tight">{title}</div>}
           <div>
@@ -331,7 +347,8 @@ export default function LineChart({
           </div>
         </div>
 
-        <div className="ml-auto shrink-0 flex items-center gap-2">
+        <div className="w-full sm:w-auto sm:ml-auto shrink-0 overflow-x-auto scrollbar-none -mx-0.5 px-0.5">
+          <div className="flex items-center gap-2 min-w-max">
           {showPills && (
             <>
               <div className="flex items-center gap-0.5 rounded-lg p-1"
@@ -377,6 +394,7 @@ export default function LineChart({
               </div>
             </>
           )}
+          </div>
         </div>
       </div>
 
@@ -527,7 +545,11 @@ export default function LineChart({
           <div
             className="tip-card absolute z-30 w-[224px] p-3 pointer-events-none"
             style={{
-              left: tipX > (wrap.current?.clientWidth || 600) - 246 ? tipX - 234 : tipX + 14,
+              // Clamp inside the chart wrapper so the inspector can never be
+              // clipped off a narrow phone screen.
+              left: `clamp(0px, ${
+                tipX > (wrap.current?.clientWidth || 600) - 246 ? tipX - 234 : tipX + 14
+              }px, calc(100% - 232px))`,
               top: 8,
             }}
           >

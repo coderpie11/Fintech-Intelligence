@@ -15,6 +15,7 @@ type Track = {
   level: string;
   summary: string;
   asset: string;
+  masterclass?: boolean;
   lesson_count: number;
 };
 
@@ -36,7 +37,7 @@ type AiSuggest = {
   cached: boolean;
 };
 
-const ASSET_ORDER = ["Universal", "Equities", "F&O", "Mutual Funds", "ETF", "Bonds", "Commodities & Trusts"];
+const ASSET_ORDER = ["Universal", "Equities", "F&O", "IPOs", "Mutual Funds", "ETF", "Bonds", "Commodities", "REITs & InvITs", "Forensics"];
 
 const CARD_STEPS: { n: string; title: string; body: string }[] = [
   { n: "1", title: "Simple meaning", body: "One or two friendly sentences in English, repeated in Hinglish." },
@@ -451,9 +452,13 @@ export default function LearnPage() {
                   <span className="muted text-[10px] font-bold uppercase tracking-[0.14em]">
                     {t.asset} · {t.level}
                   </span>
-                  <span className="knum muted text-[10.5px]">
-                    {String(i + 1).padStart(2, "0")}
-                  </span>
+                  {t.masterclass ? (
+                    <Pill tone="warn">Masterclass</Pill>
+                  ) : (
+                    <span className="knum muted text-[10.5px]">
+                      {String(i + 1).padStart(2, "0")}
+                    </span>
+                  )}
                 </div>
                 <h3 className="text-[15px] font-extrabold tracking-tight mt-1.5 leading-snug">{t.title}</h3>
                 <p className="muted text-[12px] leading-relaxed mt-2">{t.summary}</p>

@@ -462,7 +462,7 @@ export default function StockDetailPage() {
                         sub="Leader badges mark the highest ROE, lowest P/E, lowest D/E and highest 5-year CAGR in this set."
                         right={<button onClick={() => setDrawer(true)} className="btn-secondary !py-1.5 !text-[11.5px]">Open peer drawer</button>} />
           <div className="card overflow-hidden">
-            <div className="overflow-x-auto">
+            <div className="scroll-x">
               <table className="w-full min-w-[820px] border-collapse">
                 <thead>
                   <tr style={{ background: "var(--surface-2)" }}>

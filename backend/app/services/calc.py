@@ -101,10 +101,12 @@ def dcf_value(fcff_millions: float, growth_pct: float, terminal_pct: float,
         fc *= (1 + g)
         pv += fc / (1 + w) ** (_ + 1)
     tv = fc * (1 + t) / (w - t)
-    pv += tv / (1 + w) ** years
+    pv_terminal = tv / (1 + w) ** years
+    pv_explicit = pv
+    pv += pv_terminal
     equity = pv + net_cash_millions
     return {
-        "pv_explicit": round(pv, 1), "pv_terminal": round(tv / (1 + w) ** years, 1),
+        "pv_explicit": round(pv_explicit, 1), "pv_terminal": round(pv_terminal, 1),
         "equity_value_mn": round(equity, 1),
         "per_share": round(equity / shares_millions, 2),
         "assumptions": {"growth_pct": growth_pct, "terminal_pct": terminal_pct,
@@ -128,7 +130,7 @@ def net_in_pocket(side: str, buy_value: float, sell_value: float | None = None,
 
     stt_deliv = 0.1 / 100 * sell_value if sell_value else 0.0
     stt_buy = 0.0  # delivery STT applies on sell; buy-side STT is nil for CNC
-    exch = 0.00297 / 100 * turnover          # 0.297% aggregated NSE charge
+    exch = 0.00297 / 100 * turnover          # 0.00297% NSE exchange turnover charge
     sebi = 0.0001 / 100 * turnover
     stamp = 0.015 / 100 * buy_value          # buy-side only
     dp = 15.34 if sell_value else 0.0        # per order DP charge (entry+exit pooled)

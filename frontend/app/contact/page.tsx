@@ -3,7 +3,7 @@ import MetricTip from "@/components/MetricTip";
 
 export default function ContactPage() {
   return (
-    <div className="max-w-[900px] mx-auto px-6 pt-12 pb-16">
+    <div className="max-w-[900px] mx-auto px-4 sm:px-6 pt-12 pb-16">
       <h1 className="text-[34px] font-black tracking-tight mt-8">Contact</h1>
       <div className="card p-6 mt-6 text-[13.5px] leading-relaxed">
         <p className="font-bold">Built by Kishlay Choudhary</p>

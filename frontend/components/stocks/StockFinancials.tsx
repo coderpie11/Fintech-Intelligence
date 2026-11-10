@@ -167,7 +167,7 @@ export default function StockFinancials({
 
       {section === "shareholding" ? (
         <div className="card overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="scroll-x">
             <table className="w-full min-w-[700px] border-collapse">
               <thead>
                 <tr style={{ background: "var(--surface-2)" }}>
@@ -203,7 +203,7 @@ export default function StockFinancials({
         </div>
       ) : (
         <div className="card overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="scroll-x">
             <table className="w-full min-w-[720px] border-collapse">
               <thead>
                 <tr style={{ background: "var(--surface-2)" }}>

@@ -61,7 +61,7 @@ export default function MetricTip({
         createPortal(
           <div
             role="tooltip"
-            className="tip-card fixed z-[200] w-[310px] p-3.5 text-left"
+            className="tip-card fixed z-[200] w-[min(310px,calc(100vw-24px))] p-3.5 text-left"
             style={{
               left,
               top: pos.place === "top" ? pos.y - 10 : pos.y + 10,

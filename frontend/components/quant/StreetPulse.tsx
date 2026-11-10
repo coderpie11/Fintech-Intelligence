@@ -221,7 +221,7 @@ export default function StreetPulse() {
           </select>
         }
       >
-        <div className="overflow-x-auto">
+        <div className="scroll-x">
           <table className="w-full min-w-[900px] border-collapse">
             <thead>
               <tr style={{ background: "var(--surface-2)" }}>

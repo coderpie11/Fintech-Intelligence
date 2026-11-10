@@ -6,6 +6,26 @@ export type Env<T = any> = {
   note: string;
 };
 
+const CLIENT_KEY = "bfi_client_id";
+
+function clientId(): string {
+  if (typeof window === "undefined") return "default";
+  let id = window.localStorage.getItem(CLIENT_KEY);
+  if (!id) {
+    const uuid =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    id = uuid;
+    window.localStorage.setItem(CLIENT_KEY, id);
+  }
+  return id;
+}
+
+function clientHeaders(): Record<string, string> {
+  return { "X-Client-ID": clientId() };
+}
+
 async function handle(res: Response) {
   if (!res.ok) {
     let detail = "";
@@ -21,13 +41,17 @@ async function handle(res: Response) {
 }
 
 export async function getJSON<T = any>(path: string, signal?: AbortSignal): Promise<T> {
-  return fetch(`${API}${path}`, { signal, cache: "no-store" }).then(handle);
+  return fetch(`${API}${path}`, {
+    signal,
+    cache: "no-store",
+    headers: clientHeaders(),
+  }).then(handle);
 }
 
 export async function postJSON<T = any>(path: string, body?: any, method = "POST"): Promise<T> {
   return fetch(`${API}${path}`, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...clientHeaders() },
     body: body === undefined ? undefined : JSON.stringify(body),
   }).then(handle);
 }

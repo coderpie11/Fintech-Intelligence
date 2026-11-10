@@ -170,7 +170,7 @@ function CredibilityResult({ d }: { d: any }) {
       )}
 
       {(d.commitments || []).length > 0 ? (
-        <div className="overflow-x-auto rounded-lg" style={{ border: "1px solid var(--line)" }}>
+        <div className="scroll-x rounded-lg" style={{ border: "1px solid var(--line)" }}>
           <table className="w-full min-w-[860px] border-collapse">
             <thead>
               <tr style={{ background: "var(--surface-2)" }}>
@@ -241,7 +241,7 @@ function FilingDiffResult({ d }: { d: any }) {
           </Pill>
         ))}
       </div>
-      <div className="overflow-x-auto rounded-lg" style={{ border: "1px solid var(--line)" }}>
+      <div className="scroll-x rounded-lg" style={{ border: "1px solid var(--line)" }}>
         <table className="w-full min-w-[680px] border-collapse">
           <thead>
             <tr style={{ background: "var(--surface-2)" }}>

@@ -193,7 +193,7 @@ export default function GoldSilverCalculator() {
               </label>
             )}
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <label className="block">
                 <span className="muted text-[9.5px] font-bold uppercase tracking-wider">
                   <MetricTip label="Years" tip={TIPS.years}>Years</MetricTip>
@@ -261,7 +261,7 @@ export default function GoldSilverCalculator() {
                 </div>
               </div>
 
-              <div className="overflow-x-auto">
+              <div className="scroll-x">
                 <table className="w-full min-w-[720px] border-collapse text-[11.5px]">
                   <thead>
                     <tr style={{ background: "var(--surface-2)" }}>

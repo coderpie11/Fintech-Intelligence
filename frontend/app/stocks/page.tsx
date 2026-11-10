@@ -94,7 +94,7 @@ export default function StocksPage() {
       {data && (
         <>
           <div className="muted text-[12px] mb-2">{data.count} companies tracked</div>
-          <div className="card overflow-x-auto">
+          <div className="card scroll-x">
             <div className="min-w-[880px]">
               <div className="grid grid-cols-[1.3fr_.9fr_.7fr_.7fr_.6fr_1fr] gap-3 px-5 py-3 muted text-[10.5px] font-bold uppercase tracking-[0.14em]">
                 <span>Company</span>

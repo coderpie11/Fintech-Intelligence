@@ -3,7 +3,7 @@ import MetricTip from "@/components/MetricTip";
 
 export function Legal({ title, updated, blocks }: { title: string; updated: string; blocks: [string, string][] }) {
   return (
-    <div className="max-w-[900px] mx-auto px-6 pt-12 pb-16">
+    <div className="max-w-[900px] mx-auto px-4 sm:px-6 pt-12 pb-16">
       <Link href="/" className="text-[12.5px] accent hover:underline">← home</Link>
       <h1 className="text-[34px] font-black tracking-tight mt-3">{title}</h1>
       <p className="muted text-[12.5px] mt-1">

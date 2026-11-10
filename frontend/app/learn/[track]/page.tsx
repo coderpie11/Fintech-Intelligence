@@ -16,6 +16,7 @@ type Track = {
   summary: string;
   asset: string;
   asof: string;
+  masterclass?: boolean;
   lessons: Lesson[];
 };
 
@@ -61,7 +62,7 @@ function TrackBody() {
       {t && lesson && (
         <>
           <PageHeader
-            eyebrow={`${t.asset} · ${t.level}`}
+            eyebrow={`${t.asset} · ${t.level}${t.masterclass ? " · Masterclass" : ""}`}
             title={t.title}
             sub={t.summary}
             right={

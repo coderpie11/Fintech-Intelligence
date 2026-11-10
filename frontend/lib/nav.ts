@@ -13,6 +13,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Markets",
     items: [
       { label: "Indices", href: "/indices", key: "indices", desc: "Benchmarks, sectorals and India VIX" },
+      { label: "F&O Terminal", href: "/fno", key: "fno", desc: "Option chains, max pain, rollover and payoff builder" },
       { label: "Equities Desk", href: "/stocks", key: "stocks", desc: "2,400+ NSE companies, fundamentals and DCF" },
       { label: "IPOs", href: "/ipos", key: "ipos", desc: "Mainboard and SME issues" },
       { label: "Market Pulse 4 PM", href: "/market-pulse", key: "pulse", desc: "End-of-day breadth and flows" },
@@ -40,6 +41,7 @@ export const NAV_GROUPS: NavGroup[] = [
 
 export const NAV_DIRECT: NavItem[] = [
   { label: "AI Quant Hub", href: "/ai-quant-hub", key: "quant" },
+  { label: "Portfolio X-Ray", href: "/portfolio-xray", key: "xray" },
   { label: "Calculators", href: "/calculators", key: "calculators" },
   { label: "Academy", href: "/learn", key: "academy" },
   { label: "Sandbox", href: "/sandbox", key: "sandbox" },

@@ -744,7 +744,7 @@ export default function SandboxPage() {
         {!sum?.live_positions?.length ? (
           <p className="muted text-[12px]">No open paper legs. Place one above to start the ledger.</p>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="scroll-x">
             <table className="w-full min-w-[980px] border-collapse">
               <thead>
                 <tr style={{ background: "var(--surface-2)" }}>
@@ -805,7 +805,7 @@ export default function SandboxPage() {
         {!sum?.closed_positions?.length ? (
           <p className="muted text-[12px]">Nothing closed yet.</p>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="scroll-x">
             <table className="w-full min-w-[860px] border-collapse">
               <thead>
                 <tr style={{ background: "var(--surface-2)" }}>

@@ -91,7 +91,7 @@ export function ReitList() {
               <div className="text-[12.5px] font-bold">All seven listed trusts · complete metric check</div>
               <span className="muted text-[10.5px]">{data.reits.length}/7 trusts priced</span>
             </div>
-            <div className="overflow-x-auto">
+            <div className="scroll-x">
               <table className="w-full min-w-[980px] border-collapse">
                 <thead>
                   <tr style={{ background: "var(--surface-2)" }}>
@@ -388,7 +388,7 @@ export function ReitDetail({ symbol }: { symbol: string }) {
       <section className="mb-6">
         <SectionTitle title="On-demand peer compare" sub={`Other listed ${d.kind === "REIT" ? "REITs" : "InvITs"} with the same operating metrics.`} />
         <div className="card overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="scroll-x">
             <table className="w-full min-w-[760px] border-collapse">
               <thead>
                 <tr style={{ background: "var(--surface-2)" }}>

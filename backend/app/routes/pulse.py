@@ -243,9 +243,10 @@ def _compute_pulse(db: Session) -> dict:
             trade_date = _STATUS["trade_date"]
         else:
             status = reported("Warming up", note="Market status refreshes in the background.")
-            trade_date = None
+            trade_date = LQ.latest_completed_session().isoformat()
     except Exception:  # noqa: BLE001
-        status, trade_date = source_issue("market status"), None
+        status = source_issue("market status")
+        trade_date = LQ.latest_completed_session().isoformat()
 
     payload = {
         "asof_date": trade_date, "market_status": status,

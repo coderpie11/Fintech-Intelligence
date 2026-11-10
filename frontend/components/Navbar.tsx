@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import SearchBar from "./SearchBar";
 import ThemeToggle from "./ThemeToggle";
 import MarketClock from "./MarketClock";
@@ -27,6 +28,22 @@ export default function Navbar() {
   }, []);
 
   useEffect(() => { setOpen(false); setGroup(null); }, [path]);
+
+  // Lock the page behind the mobile drawer so only the menu scrolls.
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    const resize = () => { if (window.innerWidth >= 1024) setOpen(false); };
+    document.addEventListener("keydown", esc);
+    window.addEventListener("resize", resize);
+    return () => {
+      document.body.style.overflow = prev;
+      document.removeEventListener("keydown", esc);
+      window.removeEventListener("resize", resize);
+    };
+  }, [open]);
 
   const groupActive = (items: { href: string }[]) =>
     items.some((i) => isActive(path, i.href));
@@ -135,6 +152,7 @@ export default function Navbar() {
               className="btn-secondary !px-2.5 !py-2 lg:hidden"
               aria-label={open ? "Close menu" : "Open menu"}
               aria-expanded={open}
+              aria-controls="mobile-menu"
               onClick={() => setOpen(!open)}
             >
               {open ? (
@@ -150,54 +168,78 @@ export default function Navbar() {
           </div>
         </div>
 
-        {/* mobile / tablet menu */}
-        {open && (
-          <div className="lg:hidden pb-4 pt-1 max-h-[calc(100vh-70px)] overflow-y-auto"
-               style={{ borderTop: "1px solid var(--line)" }}>
-            <div className="flex flex-wrap items-center gap-2 py-3 md:hidden">
-              <MarketClock showSeconds />
-            </div>
-
-            {NAV_GROUPS.map((g) => (
-              <div key={g.key} className="mt-3">
-                <div className="muted text-[9.5px] font-bold uppercase tracking-[0.16em] px-1 mb-1.5">{g.label}</div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                  {g.items.map((item) => {
-                    const active = isActive(path, item.href);
-                    return (
-                      <Link key={item.key} href={item.href}
-                            className={`rounded-lg px-3 py-2.5 text-[12.5px] font-semibold ${active ? "accent" : ""}`}
-                            style={{
-                              border: "1px solid var(--line)",
-                              background: active ? "color-mix(in srgb, var(--accent) 10%, var(--surface))" : "var(--surface)",
-                            }}>
-                        {item.label}
-                      </Link>
-                    );
-                  })}
+        {/* mobile / tablet slide-over drawer — every desktop link stays here.
+            Portaled to <body> because the blurred header would otherwise become
+            the containing block for this fixed panel and clip it. */}
+        {open && typeof document !== "undefined" && createPortal(
+          <div id="mobile-menu" className="lg:hidden fixed inset-x-0 top-[62px] bottom-0 z-[55]">
+            <div className="absolute inset-0 bg-black/55 backdrop-blur-[2px]"
+                 onClick={() => setOpen(false)} aria-hidden />
+            <div className="drawer-in absolute right-0 top-0 h-full w-[min(90vw,400px)] overflow-y-auto safe-bottom"
+                 role="dialog" aria-modal="true" aria-label="Main navigation"
+                 style={{
+                   background: "var(--surface)",
+                   borderLeft: "1px solid var(--line)",
+                   boxShadow: "-24px 0 60px -24px rgba(2,6,23,.8)",
+                 }}>
+              <div className="sticky top-0 z-10 flex items-center justify-between gap-3 px-4 py-3"
+                   style={{ background: "var(--surface)", borderBottom: "1px solid var(--line)" }}>
+                <div className="flex flex-wrap items-center gap-2 min-w-0">
+                  <MarketClock showSeconds />
                 </div>
+                <button onClick={() => setOpen(false)} aria-label="Close menu"
+                        className="btn-secondary !px-2.5 !py-1.5 !text-[13px] shrink-0">✕</button>
               </div>
-            ))}
 
-            <div className="mt-3">
-              <div className="muted text-[9.5px] font-bold uppercase tracking-[0.16em] px-1 mb-1.5">Tools</div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                {NAV_DIRECT.map((item) => {
-                  const active = isActive(path, item.href);
-                  return (
-                    <Link key={item.key} href={item.href}
-                          className={`rounded-lg px-3 py-2.5 text-[12.5px] font-semibold ${active ? "accent" : ""}`}
-                          style={{
-                            border: "1px solid var(--line)",
-                            background: active ? "color-mix(in srgb, var(--accent) 10%, var(--surface))" : "var(--surface)",
-                          }}>
-                      {item.label}
-                    </Link>
-                  );
-                })}
+              <div className="px-4 pb-6 pt-1">
+                {NAV_GROUPS.map((g) => (
+                  <div key={g.key} className="mt-4">
+                    <div className="muted text-[9.5px] font-bold uppercase tracking-[0.16em] px-1 mb-1.5">{g.label}</div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                      {g.items.map((item) => {
+                        const active = isActive(path, item.href);
+                        return (
+                          <Link key={item.key} href={item.href}
+                                className={`rounded-lg px-3 py-2.5 text-[12.5px] font-semibold ${active ? "accent" : ""}`}
+                                style={{
+                                  border: "1px solid var(--line)",
+                                  background: active ? "color-mix(in srgb, var(--accent) 10%, var(--surface))" : "var(--surface)",
+                                }}>
+                            <span className="block">{item.label}</span>
+                            {item.desc && <span className="block muted text-[10px] font-normal mt-0.5">{item.desc}</span>}
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+
+                <div className="mt-4">
+                  <div className="muted text-[9.5px] font-bold uppercase tracking-[0.16em] px-1 mb-1.5">Tools</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    {NAV_DIRECT.map((item) => {
+                      const active = isActive(path, item.href);
+                      return (
+                        <Link key={item.key} href={item.href}
+                              className={`rounded-lg px-3 py-2.5 text-[12.5px] font-semibold ${active ? "accent" : ""}`}
+                              style={{
+                                border: "1px solid var(--line)",
+                                background: active ? "color-mix(in srgb, var(--accent) 10%, var(--surface))" : "var(--surface)",
+                              }}>
+                          {item.label}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <p className="muted text-[10.5px] leading-relaxed mt-5">
+                  Facts, maths and education only — no tips or buy/sell calls.
+                </p>
               </div>
             </div>
-          </div>
+          </div>,
+          document.body,
         )}
       </div>
     </header>

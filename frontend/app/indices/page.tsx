@@ -7,6 +7,7 @@ import { inr, pct } from "@/lib/format";
 import { ErrorBox, PageHeader, RefreshButton, Skeleton } from "@/components/PageKit";
 import MarketClock from "@/components/MarketClock";
 import MetricTip from "@/components/MetricTip";
+import PreMarketStrip from "@/components/PreMarketStrip";
 
 type Idx = {
   slug: string; symbol: string; name: string; full_name: string; group?: string;
@@ -95,6 +96,10 @@ export default function IndicesPage() {
         sub="All 18 benchmark, broad, sectoral and thematic indices with live last, day and 52-week ranges, five-year history, constituents and the F&O tab where it applies."
         right={<><MarketClock /><RefreshButton stage="indices" /></>}
       />
+
+      <div className="mb-4">
+        <PreMarketStrip compact />
+      </div>
 
       {err && <ErrorBox message={err} stage="indices" />}
       {!data && !err && <Skeleton rows={8} />}

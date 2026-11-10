@@ -40,6 +40,13 @@ def _parse_expiry(exp: str) -> float:
     return max((d - dt.datetime.now()).total_seconds() / (365 * 24 * 3600), 1 / 365)
 
 
+def _expiry_key(exp) -> dt.date:
+    try:
+        return dt.datetime.strptime(str(exp), "%d-%b-%Y").date()
+    except (TypeError, ValueError):
+        return dt.date.max
+
+
 def _index_row(db: Session, nse_name: str) -> Instrument | None:
     return (db.query(Instrument)
               .filter_by(kind="INDEX", symbol=nse_name).one_or_none())
@@ -112,7 +119,7 @@ def _transform_chain(raw: dict, underlying: str = "", selected_expiry: str | Non
                  default=(0, None))
     pcr = (sum(r["pe_oi"] or 0 for r in rows) /
            max(sum(r["ce_oi"] or 0 for r in rows), 1))
-    return {
+    return _attach_max_pain({
         "mode": "live",
         "underlying": records.get("underlying"),
         "underlyingValue": records.get("underlyingValue"),
@@ -129,7 +136,7 @@ def _transform_chain(raw: dict, underlying: str = "", selected_expiry: str | Non
         "rows": rows,
         "greeks_note": ("Greeks and POP are computed by the platform's own "
                         "Black-Scholes engine from exchange IVs; risk-free assumed 6.5%."),
-    }
+    })
 
 
 def _next_tuesdays(count: int = 4) -> list[dt.date]:
@@ -172,7 +179,7 @@ def _model_sensex_chain(db: Session, expiry: str | None = None) -> dict:
                           "theta_per_unit": g["theta_put"], "vega": g["vega"],
                           "pop": g["pop_put"]},
         })
-    return {
+    return _attach_max_pain({
         "mode": "model",
         "underlying": "SENSEX",
         "underlyingValue": spot,
@@ -193,7 +200,7 @@ def _model_sensex_chain(db: Session, expiry: str | None = None) -> dict:
         "greeks_note": (f"Black-Scholes model · spot {spot:,.2f} · IV = INDIA VIX "
                         f"{vix:.2f}% · risk-free 6.5% · expiry {active}. "
                         "Model output, not an exchange quote."),
-    }
+    })
 
 
 def _vix_payload(db: Session) -> dict:
@@ -237,6 +244,333 @@ def _vix_payload(db: Session) -> dict:
                  "index — NSE does not publish an option chain on VIX itself. "
                  "This calculator converts the VIX reading into expected NIFTY "
                  "swing ranges. Model output, not a forecast or recommendation."),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Max pain
+# ---------------------------------------------------------------------------
+def _max_pain(rows: list[dict]) -> dict | None:
+    """Strike at which option buyers lose the most / writers pay the least.
+
+    Payout to holders at expiry = sum(CE_OI x max(0, K - strike)) +
+    sum(PE_OI x max(0, strike - K)). The max-pain strike minimises that total.
+    """
+    strikes = sorted({float(r["strike"]) for r in rows if r.get("strike")})
+    has_oi = any((r.get("ce_oi") or 0) + (r.get("pe_oi") or 0) > 0 for r in rows)
+    if not strikes or not has_oi:
+        return None
+    curve, best = [], None
+    for k in strikes:
+        pain = 0.0
+        for r in rows:
+            s = float(r["strike"])
+            pain += max(0.0, k - s) * (r.get("ce_oi") or 0)
+            pain += max(0.0, s - k) * (r.get("pe_oi") or 0)
+        curve.append({"strike": k, "payout": round(pain)})
+        if best is None or pain < best[1]:
+            best = (k, pain)
+    if best is None:
+        return None
+    keep = curve if len(curve) <= 41 else curve[::max(len(curve) // 40, 1)]
+    return {"strike": best[0], "total_payout": round(best[1]),
+            "curve": keep}
+
+
+def _attach_max_pain(payload: dict) -> dict:
+    mp = _max_pain(payload.get("rows") or [])
+    if mp:
+        payload["max_pain"] = reported(
+            mp["strike"],
+            note=("Strike with the minimum total option-buyer payout at "
+                  "expiry, computed from the chain's own open interest."))
+        payload["max_pain_payout"] = mp["total_payout"]
+        payload["max_pain_curve"] = mp["curve"]
+    else:
+        payload["max_pain"] = source_issue("option open interest")
+        payload["max_pain_curve"] = []
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Underlying universe, futures matrix and multi-leg payoff builder
+# ---------------------------------------------------------------------------
+def _fno_data(underlying: str) -> list[dict]:
+    try:
+        return (N.nse.fno_quote(underlying) or {}).get("data") or []
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"NSE F&O feed unavailable: {e}") from e
+
+
+def _quadrant(price_pct, oi_change) -> str:
+    if price_pct is None or oi_change is None:
+        return "No read"
+    up = price_pct >= 0
+    add = oi_change >= 0
+    if up and add:
+        return "Long Buildup"
+    if not up and add:
+        return "Short Buildup"
+    if not up and not add:
+        return "Long Unwinding"
+    return "Short Covering"
+
+
+@router.get("/underlyings")
+def underlyings(limit: int = Query(220, ge=1, le=400),
+                db: Session = Depends(get_db)):
+    """Index derivatives plus the ~200 most-liquid NSE F&O stocks.
+
+    The stock list is the top of the local equity universe by market cap; the
+    exchange F&O feed is the authority on whether a chain exists, so each row
+    is verified lazily when opened rather than asserted here.
+    """
+    indices = [{"symbol": k, "name": v, "kind": "INDEX",
+                "lot_size": LOT_SIZES.get(k)}
+               for k, v in FNO_INDICES.items()]
+    indices.append({"symbol": "SENSEX", "name": "SENSEX", "kind": "INDEX",
+                    "lot_size": LOT_SIZES.get("SENSEX")})
+    rows = db.query(Instrument).filter(Instrument.kind == "EQUITY").all()
+
+    def mc(r):
+        try:
+            return float((r.meta or {}).get("marketCap") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    rows.sort(key=mc, reverse=True)
+    stocks = [{"symbol": r.symbol, "name": r.name, "kind": "EQUITY",
+               "sector": r.sector, "lot_size": None}
+              for r in rows[:limit]]
+    return {
+        "indices": indices,
+        "stocks": stocks,
+        "stock_count": len(stocks),
+        "note": ("Index list is the exchange F&O index set; the stock list is "
+                 "the local top-liquidity universe. Chain availability is "
+                 "confirmed from the live feed when a symbol is opened."),
+    }
+
+
+@router.get("/futures/{underlying}")
+def futures_matrix(underlying: str, lot_size: int | None = Query(None, ge=1),
+                   db: Session = Depends(get_db)):
+    u = underlying.upper().replace(" ", "")
+    data = _fno_data(u)
+    futs = [r for r in data
+            if r.get("instrumentType") in ("FUTIDX", "FUTSTK")
+            and r.get("lastPrice") is not None]
+    if not futs:
+        raise HTTPException(404, f"No futures contracts returned for {u}.")
+    futs.sort(key=lambda r: _expiry_key(r.get("expiryDate")))
+    spot = next((r.get("underlyingValue") for r in futs
+                 if r.get("underlyingValue") is not None), None)
+    rows = []
+    for r in futs:
+        pct = r.get("pchange")
+        chg_oi = r.get("changeinOpenInterest")
+        last = float(r["lastPrice"])
+        prev = float(r.get("prevClose") or last)
+        rows.append({
+            "expiry": r.get("expiryDate"),
+            "last": round(last, 2),
+            "change": round(last - prev, 2),
+            "change_pct": round(float(pct), 3) if pct is not None else None,
+            "open": r.get("openPrice"), "high": r.get("highPrice"),
+            "low": r.get("lowPrice"),
+            "oi": r.get("openInterest"), "chg_oi": chg_oi,
+            "oi_change_pct": (round(float(r.get("pchangeinOpenInterest")), 2)
+                              if r.get("pchangeinOpenInterest") is not None
+                              else None),
+            "volume": r.get("totalTradedVolume"),
+            "turnover": r.get("totalTurnover"),
+            "buildup": _quadrant(
+                float(pct) if pct is not None else None,
+                float(chg_oi) if chg_oi is not None else None),
+        })
+
+    near = rows[0]
+    nxt = rows[1] if len(rows) > 1 else None
+    rollover = None
+    if nxt:
+        total = (near.get("oi") or 0) + (nxt.get("oi") or 0)
+        rollover = {
+            "near_expiry": near["expiry"], "next_expiry": nxt["expiry"],
+            "near_oi": near.get("oi"), "next_oi": nxt.get("oi"),
+            "rollover_pct": (round((nxt.get("oi") or 0) / total * 100, 2)
+                             if total else None),
+            "next_premium": round(nxt["last"] - near["last"], 2),
+            "next_premium_pct": (round((nxt["last"] / near["last"] - 1) * 100, 3)
+                                 if near["last"] else None),
+            "note": ("Share of open interest already in the next expiry. "
+                     "Rollover cost is the next-minus-near futures spread."),
+        }
+
+    ban_list = N.nse.fno_ban_list()
+    is_index = u in FNO_INDICES or u in SENSEX_KEYS
+    banned = u in ban_list
+    ban_meter = {
+        "applicable": not is_index,
+        "banned": banned if not is_index else None,
+        "threshold_pct": 95,
+        "utilization_pct": 100.0 if (banned and not is_index) else None,
+        "state": ("INDEX - cash settled" if is_index else
+                  "BANNED" if banned else "NOT IN BAN LIST"),
+        "source": "NSE fo_secban.csv (official securities-in-ban feed)",
+        "note": ("NSE does not publish contract-wise MWPL on the free feed, so "
+                 "the 95% meter shows the authoritative ban-list state rather "
+                 "than inventing a utilisation percentage."),
+    }
+
+    traps = {"applicable": not is_index, "alerts": [], "count": 0}
+    if not is_index and spot:
+        today = dt.date.today()
+        lot = lot_size
+        alerts: list[dict] = []
+        for r in data:
+            if r.get("instrumentType") != "OPTSTK":
+                continue
+            exp = _expiry_key(r.get("expiryDate"))
+            dte = (exp - today).days
+            if dte < 0 or dte > 4:
+                continue
+            try:
+                k = float(r.get("strikePrice") or 0)
+                last = float(r.get("lastPrice") or 0)
+            except (TypeError, ValueError):
+                continue
+            ot = r.get("optionType")
+            intrinsic = (max(spot - k, 0) if ot == "CE"
+                         else max(k - spot, 0) if ot == "PE" else 0)
+            if intrinsic <= 0:
+                continue
+            alerts.append({
+                "strike": k, "option_type": ot, "expiry": r.get("expiryDate"),
+                "days_to_expiry": dte, "last": last,
+                "intrinsic": round(intrinsic, 2),
+                "notional_per_unit": round(k, 2),
+                "margin_per_lot": (round(k * lot, 2) if lot else None),
+                "risk": ("ITM stock option inside the physical-delivery "
+                         "window: delivery margin is charged on the full "
+                         "contract value, not just the premium."),
+            })
+        alerts.sort(key=lambda a: (-a["intrinsic"], a["days_to_expiry"]))
+        traps = {"applicable": True, "alerts": alerts[:8],
+                 "count": len(alerts),
+                 "note": ("Approaching expiry, ITM stock options can be "
+                          "assigned for physical delivery. Margin is ~100% of "
+                          "contract value from the delivery window.")}
+
+    return {
+        "underlying": u, "spot": spot, "futures": rows,
+        "rollover": rollover, "ban_meter": ban_meter, "delivery_traps": traps,
+        "lot_size": lot_size,
+        "note": ("Futures rows come from the live NSE F&O feed. The 4-quadrant "
+                 "read is price change x OI change; it is descriptive, not a "
+                 "recommendation."),
+    }
+
+
+class StrategyLeg(BaseModel):
+    side: str = "BUY"            # BUY / SELL
+    option_type: str = "CE"      # CE / PE
+    strike: float
+    premium: float
+    lots: float = 1
+    lot_size: float = 1
+
+
+class StrategyBody(BaseModel):
+    underlying: str = "NIFTY"
+    spot: float | None = None
+    legs: list[StrategyLeg]
+    points: int = 41
+    span_pct: float = 10.0
+
+
+def _leg_pnl(leg: StrategyLeg, s: float) -> float:
+    k = float(leg.strike)
+    intrinsic = max(s - k, 0) if leg.option_type.upper() == "CE" else max(k - s, 0)
+    sign = 1 if leg.side.upper() == "BUY" else -1
+    qty = max(float(leg.lots), 0) * max(float(leg.lot_size), 1)
+    return sign * qty * (intrinsic - float(leg.premium))
+
+
+@router.post("/strategy/payoff")
+def strategy_payoff(body: StrategyBody):
+    """Expiry payoff, net premium, max P/L and breakevens for up to 4 legs."""
+    legs = body.legs[:6]
+    if not legs:
+        raise HTTPException(422, "At least one leg is required.")
+    spot = float(body.spot or max(l.strike for l in legs) or 1.0)
+    net_premium = sum(
+        (1 if l.side.upper() == "BUY" else -1) * float(l.premium) *
+        max(float(l.lots), 0) * max(float(l.lot_size), 1) for l in legs)
+
+    def pnl(s: float) -> float:
+        return sum(_leg_pnl(l, s) for l in legs)
+
+    strikes = sorted({float(l.strike) for l in legs})
+    lo = max(min(strikes + [spot]) * 0.5, 0.0)
+    hi = max(strikes + [spot]) * 1.5
+    probes = [lo] + strikes + [hi]
+    vals = [(s, pnl(s)) for s in probes]
+    max_profit = max(v for _, v in vals)
+    max_loss = min(v for _, v in vals)
+    # Unbounded tails: a net long call / net short call keeps moving.
+    left_slope = pnl(lo + 1) - pnl(lo)
+    right_slope = pnl(hi) - pnl(hi - 1)
+    profit_unbounded = right_slope > 1e-6 or left_slope < -1e-6
+    loss_unbounded = right_slope < -1e-6 or left_slope > 1e-6
+
+    breakevens = []
+    for (s0, p0), (s1, p1) in zip(vals, vals[1:]):
+        if abs(p0) < 1e-6:
+            breakevens.append(round(s0, 2))
+        elif p0 * p1 < 0:
+            x = s0 + (s1 - s0) * (-p0) / (p1 - p0)
+            breakevens.append(round(x, 2))
+
+    points = max(9, min(int(body.points), 121))
+    span = max(float(body.span_pct), 1.0) / 100
+    start, end = spot * (1 - span), spot * (1 + span)
+    step = (end - start) / (points - 1)
+    curve = [{"spot": round(start + step * i, 2),
+              "pnl": round(pnl(start + step * i), 2)} for i in range(points)]
+
+    return {
+        "underlying": body.underlying.upper(),
+        "spot_reference": round(spot, 2),
+        "legs": [l.model_dump() for l in legs],
+        "net_premium": round(net_premium, 2),
+        "premium_side": "net debit" if net_premium > 0 else
+                        "net credit" if net_premium < 0 else "flat",
+        "max_profit": None if profit_unbounded else round(max_profit, 2),
+        "max_profit_unbounded": profit_unbounded,
+        "max_loss": None if loss_unbounded else round(max_loss, 2),
+        "max_loss_unbounded": loss_unbounded,
+        "breakevens": sorted(set(breakevens)),
+        "curve": curve,
+        "note": ("Expiry payoff from the entered legs only. Premiums are per "
+                 "unit; lots x lot_size is the contract multiplier. No margin, "
+                 "charges or assignment modelling."),
+    }
+
+
+@router.get("/max-pain/{underlying}")
+def max_pain(underlying: str, expiry: str | None = Query(None),
+             db: Session = Depends(get_db)):
+    chain = option_chain(underlying, expiry, db)
+    return {
+        "underlying": underlying.upper(),
+        "mode": chain.get("mode"),
+        "spot": chain.get("underlyingValue"),
+        "max_pain": chain.get("max_pain"),
+        "total_payout": chain.get("max_pain_payout"),
+        "curve": chain.get("max_pain_curve"),
+        "note": ("Computed from the chain's open interest at every strike. "
+                 "Model chains without exchange OI return unavailable, never "
+                 "a fabricated level."),
     }
 
 

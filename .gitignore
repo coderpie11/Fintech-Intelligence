@@ -6,6 +6,12 @@ backend/.env
 backend/data/
 backend/*.log
 
+# virtualenvs
+venv/
+.venv/
+env/
+ENV/
+
 # node / next
 node_modules/
 .next/

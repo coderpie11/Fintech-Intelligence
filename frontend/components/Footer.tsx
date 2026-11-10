@@ -5,7 +5,7 @@ import BrandMark from "./BrandMark";
 export default function Footer() {
   return (
     <footer className="mt-16 border-t border-rule" style={{ borderColor: "var(--line)" }}>
-      <div className="mx-auto max-w-[1600px] px-6 py-10 grid gap-10 md:grid-cols-3">
+      <div className="mx-auto max-w-[1600px] px-4 sm:px-6 py-10 grid gap-10 md:grid-cols-3">
         <div>
           <div className="flex items-center gap-2.5 mb-2">
             <BrandMark size={30} />

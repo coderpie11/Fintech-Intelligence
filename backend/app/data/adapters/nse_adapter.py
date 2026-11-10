@@ -87,6 +87,42 @@ class NseApi:
         return self._call(f"optstk:{symbol}:{expiry or 'nearest'}",
                           lambda: self.session().equities_option_chain(symbol, expiry))
 
+    def fno_quote(self, symbol: str) -> dict:
+        """Every live futures + options contract for one F&O underlying.
+
+        NSE returns FUTIDX/FUTSTK/OPTIDX/OPTSTK rows in one payload with OI,
+        change-in-OI and volume, which is exactly what the 4-quadrant
+        buildup and rollover matrix need.
+        """
+        return self._call(f"fno:{symbol}",
+                          lambda: self.session().stock_quote_fno(symbol))
+
+    def fno_contract_info(self, symbol: str) -> dict:
+        return self._call(f"fnoinfo:{symbol}",
+                          lambda: self.session().option_chain_contract_info(symbol))
+
+    def fno_ban_list(self) -> list[str]:
+        """Official NSE securities-in-ban feed (fo_secban.csv)."""
+        import re
+        key = "nse:fno_ban_list"
+        hit = cache_get(key)
+        if hit is not None:
+            return hit
+        url = "https://nsearchives.nseindia.com/content/fo/fo_secban.csv"
+        rows: list[str] = []
+        try:
+            _throttle()
+            r = requests.get(url, timeout=20, headers={"User-Agent": _UA})
+            if r.status_code == 200:
+                for line in r.text.splitlines():
+                    m = re.match(r"\s*\d+\s*,\s*([A-Z0-9&\-]+)", line.strip())
+                    if m:
+                        rows.append(m.group(1).upper())
+                cache_set(key, rows, ttl=900)
+        except Exception:  # noqa: BLE001
+            pass
+        return rows
+
     def corporate_actions(self, days: int = 30) -> list:
         def fetch():
             import datetime as _dt

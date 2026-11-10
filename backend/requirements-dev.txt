@@ -1,0 +1,3 @@
+# Test tooling for the local-first repository smoke suite.
+-r requirements.txt
+pytest==9.2.0

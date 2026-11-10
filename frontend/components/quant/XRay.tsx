@@ -222,7 +222,7 @@ export default function XRay() {
       </div>
 
       <Panel title="Step 3 — Stock-level confirmation" sub="Names where delivery and price agree with the sector tilt. Delivery Z compares the stock with its own 45-session history.">
-        <div className="overflow-x-auto">
+        <div className="scroll-x">
           <table className="w-full min-w-[760px] border-collapse">
             <thead>
               <tr style={{ background: "var(--surface-2)" }}>
@@ -254,7 +254,7 @@ export default function XRay() {
 
       <div className="grid lg:grid-cols-[1.2fr_1fr] gap-3">
         <Panel title="Volume shockers" sub="Turnover far above the stock's own recent average, with the direction and delivery that came with it.">
-          <div className="overflow-x-auto">
+          <div className="scroll-x">
             <table className="w-full min-w-[620px] border-collapse">
               <thead>
                 <tr style={{ background: "var(--surface-2)" }}>

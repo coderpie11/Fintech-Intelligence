@@ -6,7 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -148,7 +148,75 @@ def _impact_and_liquidity(q: dict, ltp: float | None) -> dict:
     }
 
 
-def _row(symbol: str, spec: dict, q: dict, hist: list[dict]) -> dict:
+def _parse_iso(s) -> dt.date | None:
+    try:
+        return dt.date.fromisoformat(str(s))
+    except (TypeError, ValueError):
+        return None
+
+
+def _pd_status(dev: float | None) -> str:
+    if dev is None:
+        return "unavailable"
+    if dev >= 0.25:
+        return "premium"
+    if dev <= -0.25:
+        return "discount"
+    return "fair"
+
+
+def _inav_block(db: Session | None, spec: dict, ltp: float | None,
+                nav: float | None) -> dict:
+    """Live iNAV deviation.
+
+    No free exchange iNAV feed exists here, so the indicative NAV marks the
+    latest published NAV to the benchmark's live intraday move. When no live
+    benchmark move is available it falls back to the published-NAV premium /
+    discount and says so. Always model-derived, never presented as an official
+    iNAV.
+    """
+    if ltp is None or nav is None:
+        return {"live": False, "inav": None, "deviation_pct": None,
+                "status": "unavailable", "source": None,
+                "note": "Price or NAV is unavailable, so no deviation can be computed."}
+    bench = spec.get("benchmark")
+    if bench == "NASDAQ100":
+        bench = "^NDX"
+    bench_chg = None
+    if bench and bench not in ("GOLD_INR_PROXY", "SILVER_INR_PROXY") and db is not None:
+        row = (db.query(Instrument).filter_by(kind="INDEX", symbol=bench)
+                 .one_or_none())
+        m = (row.meta or {}) if row else {}
+        last, prev = _num(m.get("last")), _num(m.get("prevClose"))
+        asof = _parse_iso(m.get("live_asof"))
+        fresh = asof is not None and abs((dt.date.today() - asof).days) <= 3
+        if fresh and last and prev:
+            bench_chg = (last / prev - 1) * 100
+    if bench_chg is None:
+        dev = (ltp - nav) / nav * 100
+        return {
+            "live": False, "inav": round(nav, 4),
+            "deviation_pct": round(dev, 3), "status": _pd_status(dev),
+            "benchmark_change_pct": None, "source": "NSE published NAV",
+            "note": ("No live benchmark intraday move is available here, so this "
+                     "deviation is versus the latest published NAV, not an "
+                     "intraday iNAV."),
+        }
+    inav = nav * (1 + bench_chg / 100)
+    dev = (ltp - inav) / inav * 100
+    return {
+        "live": True, "inav": round(inav, 4),
+        "benchmark_change_pct": round(bench_chg, 3),
+        "deviation_pct": round(dev, 3), "status": _pd_status(dev),
+        "source": f"NSE NAV marked to live {bench} move",
+        "note": ("Indicative iNAV = latest published NAV adjusted for the "
+                 "benchmark's live intraday move. Model-derived; not the "
+                 "exchange's official iNAV print."),
+    }
+
+
+def _row(symbol: str, spec: dict, q: dict, hist: list[dict],
+         db: Session | None = None) -> dict:
     ltp = _num(q.get("ltP")) or (hist[-1]["c"] if hist else None)
     nav = _num(q.get("nav")) or (hist[-1]["c"] if hist else None)
     prev = _num(q.get("prevClose")) or (hist[-2]["c"] if len(hist) > 1 else None)
@@ -182,6 +250,7 @@ def _row(symbol: str, spec: dict, q: dict, hist: list[dict]) -> dict:
         "premium_discount_pct": _env(
             round((ltp - nav) / nav * 100, 2) if ltp and nav else None,
             "premium/discount to NAV"),
+        "inav": _inav_block(db, spec, ltp, nav),
         "open": _env(_num(q.get("open")) or _num(last.get("o")), "open"),
         "high": _env(_num(q.get("high")) or _num(last.get("h")), "day high"),
         "low": _env(_num(q.get("low")) or _num(last.get("l")), "day low"),
@@ -234,7 +303,7 @@ def list_etfs(db: Session = Depends(get_db)):
             hist = fallback_history(spec)
         live_q = qmap.get(sym)
         q = live_q or _quote_from_meta(meta)
-        row = _row(sym, spec, q, hist)
+        row = _row(sym, spec, q, hist, db)
         fb = spec.get("fallback") or {}
 
         # Guarantee every display field is populated even when the free feed
@@ -272,6 +341,53 @@ def list_etfs(db: Session = Depends(get_db)):
                               "modelled are clearly labelled fallback values.")}
 
 
+@router.get("/liquidity-scan")
+def liquidity_scan(limit: int = Query(60, ge=1, le=200),
+                   sort: str = Query("liquidity",
+                                     pattern="^(liquidity|impact|turnover)$"),
+                   db: Session = Depends(get_db)):
+    """iNAV deviation + impact-cost scanner across the curated ETF universe."""
+    qmap = _quote_map()
+    stored = _stored_map(db)
+    rows = []
+    for spec in ETF_UNIVERSE:
+        sym = spec["symbol"]
+        rec = stored.get(sym)
+        meta = (rec.meta or {}) if rec else {}
+        live = qmap.get(sym)
+        q = live or _quote_from_meta(meta)
+        ltp = _num(q.get("ltP")) or _num(meta.get("lastPrice"))
+        nav = _num(q.get("nav")) or _num(meta.get("nav"))
+        liq = _impact_and_liquidity(q, ltp)
+        inav = _inav_block(db, spec, ltp, nav)
+        rows.append({
+            "symbol": sym, "name": spec["name"], "category": spec["category"],
+            "ltp": ltp, "nav": nav,
+            "inav": inav.get("inav"), "inav_live": inav.get("live"),
+            "deviation_pct": inav.get("deviation_pct"),
+            "deviation_status": inav.get("status"),
+            "impact_cost_pct": liq.get("impact_cost_pct"),
+            "liquidity_score": liq.get("liquidity_score"),
+            "turnover_cr": liq.get("turnover_cr"), "volume": liq.get("volume"),
+            "quote_source": "NSE /api/etf" if live else "Stored snapshot",
+        })
+    if sort == "impact":
+        rows.sort(key=lambda r: (r["impact_cost_pct"] is None,
+                                 r["impact_cost_pct"] or 0))
+    elif sort == "turnover":
+        rows.sort(key=lambda r: -(r["turnover_cr"] or 0))
+    else:
+        rows.sort(key=lambda r: -(r["liquidity_score"] or 0))
+    return {
+        "count": len(rows), "sort": sort, "etfs": rows[:limit],
+        "thresholds": {"premium_discount_band_pct": 0.25},
+        "note": ("Impact cost is a modelled half-spread proxy from the day's range "
+                 "and traded quantity, not an order-book measurement. iNAV "
+                 "deviation compares the live price with an indicative NAV marked "
+                 "to the benchmark move; flags use a +/-0.25% band."),
+    }
+
+
 @router.get("/{symbol}")
 def etf_detail(symbol: str, db: Session = Depends(get_db)):
     sym = symbol.upper()
@@ -291,7 +407,7 @@ def etf_detail(symbol: str, db: Session = Depends(get_db)):
                  .one_or_none())
         if rec:
             q = _quote_from_meta(rec.meta or {})
-    row = _row(sym, spec, q, hist)
+    row = _row(sym, spec, q, hist, db)
     bench, bench_meta = _benchmark(db, spec)
     te = calc.tracking_error(_navs(hist), bench) if bench else None
     if te is None:

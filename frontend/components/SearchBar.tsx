@@ -299,23 +299,23 @@ export default function SearchBar({ compact }: { compact?: boolean }) {
             onClick={() => setOpen(false)}
             aria-hidden
           />
-          <div className="relative mx-auto mt-[8vh] w-[min(760px,94vw)]">
+          <div className="relative mx-auto mt-[5vh] sm:mt-[8vh] w-[calc(100vw-0.75rem)] sm:w-[min(760px,94vw)]">
             <div className="card overflow-hidden shadow-2xl" style={{ background: "var(--surface)" }}>
-              <div className="flex items-center gap-3 px-4 py-3.5" style={{ borderBottom: "1px solid var(--line)" }}>
-                <span className="accent"><SearchIcon size={18} /></span>
+              <div className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-3.5" style={{ borderBottom: "1px solid var(--line)" }}>
+                <span className="accent shrink-0"><SearchIcon size={18} /></span>
                 <input
                   ref={input}
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
                   onKeyDown={onKey}
                   placeholder="Search 2,400+ stocks, 38,000+ funds, ETFs, indices, IPOs…"
-                  className="w-full bg-transparent text-[15px] outline-none"
+                  className="w-full min-w-0 bg-transparent text-[16px] sm:text-[15px] outline-none"
                   style={{ color: "var(--ink)" }}
                   aria-label="Global search"
                 />
                 {busy && <span className="knum muted text-[11px]">…</span>}
                 <button onClick={() => setOpen(false)}
-                        className="chip !text-[9.5px] hover:!text-[var(--ink)]">ESC</button>
+                        className="chip !text-[9.5px] shrink-0 hover:!text-[var(--ink)]">ESC</button>
               </div>
 
               {/* category tabs */}
@@ -434,13 +434,13 @@ export default function SearchBar({ compact }: { compact?: boolean }) {
                 )}
               </div>
 
-              <div className="px-4 py-2.5 flex items-center gap-4 muted text-[10.5px]"
+              <div className="px-3 sm:px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 muted text-[10.5px]"
                    style={{ borderTop: "1px solid var(--line)", background: "var(--surface-2)" }}>
                 <span><kbd className="knum">↑↓</kbd> navigate</span>
                 <span><kbd className="knum">tab</kbd> category</span>
                 <span><kbd className="knum">↵</kbd> open</span>
                 <span><kbd className="knum">esc</kbd> close</span>
-                <span className="ml-auto">Ctrl K anywhere</span>
+                <span className="ml-auto hidden sm:inline">Ctrl K anywhere</span>
               </div>
             </div>
           </div>

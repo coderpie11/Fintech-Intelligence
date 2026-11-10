@@ -235,7 +235,7 @@ export function EtfList() {
           </div>
 
           <div className="card overflow-hidden">
-            <div className="overflow-x-auto">
+            <div className="scroll-x">
               <table className="w-full min-w-[1380px] border-collapse">
                 <thead>
                   <tr style={{ background: "var(--surface-2)" }}>
@@ -319,6 +319,70 @@ export function EtfList() {
     </div>
   );
 }
+
+function EtfScanner() {
+  const [rows, setRows] = useState<any[] | null>(null);
+  const [sort, setSort] = useState("impact");
+  useEffect(() => {
+    let live = true;
+    getJSON(`/etfs/liquidity-scan?sort=${sort}&limit=12`)
+      .then((r) => { if (live) setRows(r.etfs || []); })
+      .catch(() => { if (live) setRows([]); });
+    return () => { live = false; };
+  }, [sort]);
+  return (
+    <div className="card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <div>
+          <div className="text-[13px] font-bold">ETF impact-cost &amp; liquidity scanner</div>
+          <p className="muted text-[11px] mt-0.5">
+            Ranked across the curated ETF universe. iNAV deviation flags a premium or
+            discount beyond a ±0.25% band.
+          </p>
+        </div>
+        <div className="flex gap-1">
+          {["impact", "liquidity", "turnover"].map((s) => (
+            <button key={s} onClick={() => setSort(s)}
+                    className={`chip !text-[10px] ${sort === s ? "chip-active" : ""}`}>{s}</button>
+          ))}
+        </div>
+      </div>
+      <div className="scroll-x">
+        <table className="w-full min-w-[560px] text-[11.5px]">
+          <thead>
+            <tr className="muted text-[9px] uppercase tracking-wider text-left">
+              <th className="py-1.5 pr-2">ETF</th><th className="py-1.5 pr-2 text-right">Price</th>
+              <th className="py-1.5 pr-2 text-right">iNAV</th><th className="py-1.5 pr-2 text-right">Deviation</th>
+              <th className="py-1.5 pr-2 text-right">Impact</th><th className="py-1.5 text-right">Liquidity</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(rows || []).map((r) => (
+              <tr key={r.symbol} style={{ borderTop: "1px solid var(--line)" }}>
+                <td className="py-1.5 pr-2">
+                  <Link href={`/etfs/${r.symbol}`} className="font-semibold accent">{r.symbol}</Link>
+                  <div className="muted text-[9.5px] truncate max-w-[150px]">{r.name}</div>
+                </td>
+                <td className="py-1.5 pr-2 text-right knum">{r.ltp == null ? "—" : inr(r.ltp)}</td>
+                <td className="py-1.5 pr-2 text-right knum">{r.inav == null ? "—" : inr(r.inav)}</td>
+                <td className="py-1.5 pr-2 text-right">
+                  <span className={`chip !text-[9px] ${r.deviation_status === "premium" ? "chip-warn" : ""}`}>
+                    {r.deviation_pct == null ? "—" : pct(r.deviation_pct)}
+                  </span>
+                </td>
+                <td className="py-1.5 pr-2 text-right knum">{r.impact_cost_pct == null ? "—" : `${r.impact_cost_pct.toFixed(3)}%`}</td>
+                <td className="py-1.5 text-right knum">{r.liquidity_score ?? "—"}/100</td>
+              </tr>
+            ))}
+            {rows && rows.length === 0 && <tr><td colSpan={6} className="py-3 muted">Scanner feed unavailable.</td></tr>}
+            {!rows && <tr><td colSpan={6} className="py-3 muted">Loading scanner…</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 
 export function EtfDetail({ symbol }: { symbol: string }) {
   const sym = (symbol || "").toUpperCase();
@@ -488,6 +552,25 @@ export function EtfDetail({ symbol }: { symbol: string }) {
             ))}
           </div>
 
+          {d.inav && (
+            <div className="rounded-md px-2.5 py-2" style={{ border: "1px solid var(--line)", background: "var(--surface-2)" }}>
+              <div className="flex items-center justify-between">
+                <span className="muted text-[9px] font-bold uppercase tracking-wider">
+                  <MetricTip label="iNAV deviation" tip={TIPS.premium}>iNAV deviation</MetricTip>
+                </span>
+                <span className={`chip !text-[9px] ${d.inav.status === "premium" ? "chip-warn" : ""}`}>
+                  {d.inav.live ? "live mark" : "published NAV"}
+                </span>
+              </div>
+              <div className="knum text-[15px] font-black mt-0.5">
+                {d.inav.deviation_pct == null ? "—" : pct(d.inav.deviation_pct)}
+                <span className="muted text-[10px] font-semibold ml-1.5">{d.inav.status}</span>
+              </div>
+              <div className="muted text-[9.5px] mt-0.5">iNAV {d.inav.inav == null ? "—" : inr(d.inav.inav)} · price vs indicative NAV</div>
+              <div className="muted text-[9px] mt-0.5 leading-snug">{d.inav.note}</div>
+            </div>
+          )}
+
           <div>
             <div className="flex items-center justify-between muted text-[10px] mb-1.5">
               <span className="font-bold uppercase tracking-[0.13em]">
@@ -605,6 +688,10 @@ export function EtfDetail({ symbol }: { symbol: string }) {
             </div>
           )}
         </div>
+      </section>
+
+      <section className="mb-6">
+        <EtfScanner />
       </section>
 
       <section className="grid md:grid-cols-2 gap-3">

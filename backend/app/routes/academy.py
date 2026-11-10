@@ -770,6 +770,19 @@ TRACKS = {
     },
 }
 
+# Phase-4 curriculum expansion. The REIT/InvIT lessons moved into their own
+# dedicated track, so the commodities track is now gold/silver focused.
+_COMMODITIES = TRACKS["commodities-reits"]
+_COMMODITIES["lessons"] = [l for l in _COMMODITIES["lessons"]
+                           if l["id"] not in ("reit-yield", "invit")]
+_COMMODITIES["title"] = "Gold, Silver & Commodities"
+_COMMODITIES["summary"] = ("Import parity, the gold/silver ratio, Sovereign Gold Bonds "
+                           "and the commodity cues that move Indian prices.")
+
+from app.routes.academy_guides import EXTRA_TRACKS  # noqa: E402
+
+TRACKS.update(EXTRA_TRACKS)
+
 
 _GLOSSARY = [
     dict(id="pat-to-book", title="PAT to book value — profit on every rupee of net worth",
@@ -1355,6 +1368,7 @@ def index_page():
         "asof": ASOF,
         "tracks": [{"id": tid, "title": t["title"], "level": t["level"],
                     "summary": t["summary"], "asset": t["asset"],
+                    "masterclass": bool(t.get("masterclass")),
                     "lesson_count": len(t["lessons"])}
                    for tid, t in TRACKS.items()],
         "total_lessons": sum(len(t["lessons"]) for t in TRACKS.values()),
@@ -1627,4 +1641,5 @@ def track_page(track_id: str):
         raise HTTPException(404, "Unknown track")
     return {"id": track_id, "title": t["title"], "level": t["level"],
             "summary": t["summary"], "asset": t["asset"], "asof": ASOF,
+            "masterclass": bool(t.get("masterclass")),
             "lessons": t["lessons"]}

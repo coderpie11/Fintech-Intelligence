@@ -342,6 +342,122 @@ def list_ipos(filter: str = "all", board: str | None = None,
     }
 
 
+def _parse_date(s) -> dt.date | None:
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d %b %Y", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return dt.datetime.strptime(str(s).strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _listing_gain(r: Ipo, live_syms: set[str], db: Session) -> float | None:
+    """Realised listing gain. Real prints beat an indicative GMP; never invented."""
+    m = r.meta or {}
+    g = m.get("listed_gain_pct")
+    if g is not None:
+        try:
+            return float(g)
+        except (TypeError, ValueError):
+            pass
+    price = r.price_band_high
+    if not price:
+        return None
+    lp = m.get("listed_price")
+    if lp is None and r.symbol and r.symbol.upper() in live_syms:
+        row = (db.query(Instrument)
+                 .filter_by(kind="EQUITY", symbol=r.symbol.upper()).one_or_none())
+        if row:
+            rm = row.meta or {}
+            lp = rm.get("lastPrice")
+            if lp is None and row.history:
+                lp = row.history[-1].get("c")
+    if lp is None:
+        return None
+    try:
+        return round((float(lp) / price - 1) * 100, 2)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _brlm_track_record(db: Session, names: list[str]) -> list[dict]:
+    """Historical listing gain and 1Y survival across each manager's deals.
+
+    Computed only from the platform's own IPO archive where the manager is
+    named in the offer document. Survival = the stock is still on the local
+    universe, an explicit proxy for the 1-year survival rate.
+    """
+    all_rows = db.query(Ipo).all()
+    live_syms = {s for (s,) in
+                 db.query(Instrument.symbol)
+                   .filter(Instrument.kind == "EQUITY").all() if s}
+    out = []
+    for name in names:
+        nl = (name or "").strip().lower()
+        if not nl:
+            continue
+        managed = [r for r in all_rows
+                   if any(nl == str(x).strip().lower()
+                          for x in ((r.meta or {}).get("brlm") or []))]
+        gains, listed, survived = [], 0, 0
+        for r in managed:
+            has_listed = (r.status == "LISTED"
+                          or (r.meta or {}).get("listed_price") is not None)
+            if not has_listed:
+                continue
+            listed += 1
+            g = _listing_gain(r, live_syms, db)
+            if g is not None:
+                gains.append(g)
+            sym = (r.symbol or "").upper()
+            if sym and sym in live_syms:
+                survived += 1
+        out.append({
+            "name": name,
+            "deals": len(managed),
+            "listed_deals": listed,
+            "avg_listing_gain_pct": round(sum(gains) / len(gains), 2) if gains else None,
+            "best_listing_gain_pct": round(max(gains), 2) if gains else None,
+            "worst_listing_gain_pct": round(min(gains), 2) if gains else None,
+            "survival_1y_pct": round(survived / listed * 100, 1) if listed else None,
+            "note": ("Deals and gains are computed from this platform's IPO archive "
+                     "where the manager is named as a book-running lead manager. "
+                     "Survival = still trading on the local universe."),
+        })
+    return out
+
+
+def _anchor_countdown(i: Ipo, m: dict) -> dict:
+    """30 / 90-day anchor lock-in expiry countdown alerts."""
+    listing = _parse_date(i.listing_date)
+    out = {"basis": "anchor lock-in counted from the listing date",
+           "note": ("Anchor investors are locked in for 30 days on half the "
+                    "allocation and 90 days on the remainder. A lock-in expiry can "
+                    "add supply, so it is shown as a supply-risk flag, not a call.")}
+    for days in (30, 90):
+        expiry = _parse_date(m.get(f"anchor_lockin_{days}")) or (
+            listing + dt.timedelta(days=days) if listing else None)
+        key = f"{days}_day"
+        if not expiry:
+            out[key] = {"expiry": None, "days_remaining": None,
+                        "status": "unknown",
+                        "alert": "Listing date is not known, so the lock-in window cannot be dated."}
+            continue
+        rem = (expiry - dt.date.today()).days
+        out[key] = {
+            "expiry": expiry.isoformat(), "days_remaining": rem,
+            "status": ("expired" if rem < 0 else "today" if rem == 0 else "active"),
+            "alert": ("Lock-in already lifted - any anchor supply has had time to clear."
+                      if rem < 0 else
+                      "Anchor lock-in expires today; expect bar-close supply risk."
+                      if rem == 0 else
+                      f"Anchor supply unlocks in {rem} day(s) - watch for post-lock-in selling pressure."),
+        }
+    return out
+
+
 def _detail_scrape(i: Ipo) -> dict:
     m = i.meta or {}
     slug, ig_id = m.get("ig_slug"), m.get("ig_id")
@@ -429,20 +545,28 @@ def ipo_detail(slug: str, db: Session = Depends(get_db)):
     }
 
     pre = m.get("preipo_price")
+    offer_vs_unlisted = (round((offer / pre - 1) * 100, 2)
+                         if pre and offer else None)
     pre_compare = {
         "preipo_price": _env(pre, "pre-IPO unlisted price"),
+        "unlisted_price": _env(pre, "pre-IPO unlisted market price"),
         "offer_price": _env(offer or None, "IPO offer price"),
-        "premium_pct": _env(round((offer / pre - 1) * 100, 2)
-                            if pre and offer else None,
-                            "offer premium over pre-IPO price"),
-        "note": ("The pre-IPO price is the last unlisted-market transaction disclosed "
-                 "in the offer documents. It is not a live unlisted quote."),
+        "band_low": _env(i.price_band_low, "lower price band"),
+        "band_high": _env(i.price_band_high, "upper price band"),
+        "premium_pct": _env(offer_vs_unlisted, "offer premium over pre-IPO price"),
+        "unlisted_discount_pct": _env(
+            round((pre / offer - 1) * 100, 2) if pre and offer else None,
+            "unlisted price vs IPO band"),
+        "signal": (None if offer_vs_unlisted is None else
+                   "IPO priced above the last unlisted print" if offer_vs_unlisted > 0
+                   else "IPO priced at/below the last unlisted print"),
+        "note": ("The pre-IPO price is the last unlisted-market transaction "
+                 "disclosed in the offer documents, compared with the official IPO "
+                 "price band. It is not a live unlisted quote."),
     }
 
-    lead = scraped.get("lead_managers") or (m.get("brlm") or [])
-    brlm = [{"name": name, "deals": None,
-             "track_record": "Book-running lead manager named in the offer document."}
-            for name in lead if name]
+    lead = [n for n in (scraped.get("lead_managers") or m.get("brlm") or []) if n]
+    brlm = _brlm_track_record(db, lead)
 
     # Financials: scraped offer-document table, else the curated seed.
     financials = []
@@ -532,6 +656,7 @@ def ipo_detail(slug: str, db: Session = Depends(get_db)):
             "note": "Anchor investors are locked in for 30 days on half the allocation "
                     "and 90 days on the remainder.",
         },
+        "anchor_countdown": _anchor_countdown(i, m),
         "source_notes": [
             "GMP, subscription and listing prints are scraped live from "
             "InvestorGain's public report; GMP is unofficial and unregulated.",

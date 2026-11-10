@@ -734,8 +734,9 @@ export default function FnoTab({ underlying }: { underlying: string }) {
       </div>
 
       {/* chain table — 540px scroll window, auto-centred on ATM */}
+      <div className="swipe-cue">‹ swipe the chain to see every Greek, OI and IV column ›</div>
       <div className="card overflow-hidden">
-        <div ref={scrollRef} className="max-h-[540px] overflow-auto">
+        <div ref={scrollRef} className="scroll-x scroll-x-tall">
           <table className="w-full border-collapse" style={{ minWidth: anyExtra ? 1480 : 720 }}>
             <thead>
               <tr style={{ background: "var(--surface-2)" }}>

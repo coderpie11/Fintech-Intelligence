@@ -17,6 +17,7 @@ from app.data.adapters import yfinance_adapter as Y
 from app.seed import universe as U
 from app.seed import nse_universe as NSE_UNIVERSE
 from app.services.contextual import reported
+from app.services.live_quote import latest_completed_session
 
 log_prefix = "[seed]"
 
@@ -384,7 +385,7 @@ def all_indices_map() -> dict[str, dict]:
 
 
 def today_stamp() -> str:
-    return dt.date.today().isoformat()
+    return latest_completed_session().isoformat()
 
 
 # ---------------------------------------------------------------- equities
@@ -1015,7 +1016,7 @@ def seed_delivery(db: Session) -> dict:
     import requests
 
     stats = {"date": None, "rows": 0, "matched": 0}
-    today = dt.date.today()
+    today = latest_completed_session()
     text = None
     for back in range(0, 8):
         d = today - dt.timedelta(days=back)
@@ -1076,7 +1077,7 @@ def seed_delivery_history(db: Session, sessions: int = 45) -> dict:
     if not tracked:
         return stats
 
-    today = dt.date.today()
+    today = latest_completed_session()
     candidates: list[dt.date] = []
     d = today
     while len(candidates) < sessions * 2 and (today - d).days < sessions * 3:
