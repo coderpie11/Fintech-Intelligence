@@ -10,6 +10,9 @@ import Footer from "@/components/Footer";
 export const runtime = "edge";
 
 export const metadata: Metadata = {
+  // Served from public/ as a plain static asset (not an app/ metadata route,
+  // which Cloudflare would try to run as an edge function).
+  icons: { icon: "/favicon.ico" },
   title: "Fintech Intelligence — India's Facts-First Market Database",
   description:
     "Institutional-grade Indian market encyclopedia: equities, indices, F&O, IPOs, mutual funds, ETFs, bonds, gold, silver, REITs and education. Not a buy/sell recommendation.",
