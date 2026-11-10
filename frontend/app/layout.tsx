@@ -4,6 +4,11 @@ import "./globals.css";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 
+// Cloudflare Pages: render the whole App Router tree on the edge runtime.
+// Static segments are still prerendered at build time; this only decides the
+// runtime for anything evaluated on request (e.g. dynamic segments, 404).
+export const runtime = "edge";
+
 export const metadata: Metadata = {
   title: "Fintech Intelligence — India's Facts-First Market Database",
   description:
