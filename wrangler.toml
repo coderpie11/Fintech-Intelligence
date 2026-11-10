@@ -15,12 +15,3 @@ compatibility_flags = ["nodejs_compat"]
 
 # Output produced by `npx @cloudflare/next-on-pages` inside frontend/.
 pages_build_output_dir = "frontend/.vercel/output/static"
-
-# ---------------------------------------------------------------------------
-# D1 binding — reachable in edge runtime as `env.DB` (D1Database).
-# Replace database_id with the value printed by `wrangler d1 create`.
-# ---------------------------------------------------------------------------
-[[d1_databases]]
-binding = "DB"
-database_name = "fintech-intelligence-db"
-database_id = "00000000-0000-0000-0000-000000000000"
