@@ -27,14 +27,19 @@ _ALL_RUN = {"running": False}
 @router.api_route("/health", methods=["GET", "HEAD"])
 def health():
     import os
+    import platform
+
+    from app.services.live_quote import live_quotes_enabled
 
     return {
         "status": "ok",
         "service": "Fintech Intelligence API",
-        "version": "1.0.1",
+        "version": "1.0.2",
         # Render injects the deployed commit; handy for confirming which build
         # is actually live. Empty locally.
         "commit": (os.getenv("RENDER_GIT_COMMIT") or "")[:7],
+        "python": platform.python_version(),
+        "live_quotes": live_quotes_enabled(),
         "snapshot": SNAPSHOT_STATE,
     }
 

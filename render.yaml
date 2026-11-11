@@ -28,6 +28,10 @@ services:
       # seeded and the free 512 MB instance cannot afford a warmup pass.
       - key: ENABLE_SCHEDULER
         value: "false"
+      # Serve prices from the snapshot; do not call yfinance/curl_cffi from
+      # request threads (that C-extension path is what crashed with exit 139).
+      - key: ENABLE_LIVE_QUOTES
+        value: "false"
       # Public origin of the deployed Cloudflare Pages frontend, so the
       # browser can call the API directly when /bff rewrites are unavailable.
       - key: CORS_ORIGINS

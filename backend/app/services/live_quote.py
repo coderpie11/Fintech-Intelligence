@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import os
 import time
 from typing import Iterable
 
@@ -230,9 +231,26 @@ def commit_with_retry(db: Session, attempts: int = 3, delay: float = 0.25) -> bo
     return False
 
 
+def live_quotes_enabled() -> bool:
+    """Network quote refreshes are opt-in on hosted platforms.
+
+    The pre-seeded snapshot already carries every price the UI needs. Calling
+    into yfinance/curl_cffi from a request thread is what SIGSEGV'd the Render
+    container (no cp314 wheels for the pinned C extensions), so unless a host
+    explicitly sets ENABLE_LIVE_QUOTES=1 we stay on the snapshot. Local dev
+    keeps the old behaviour because RENDER is not set there.
+    """
+    flag = os.getenv("ENABLE_LIVE_QUOTES")
+    if flag is None:
+        return not os.getenv("RENDER")
+    return flag.strip().lower() not in ("", "0", "false", "no")
+
+
 def refresh_rows(db: Session, rows: Iterable[Instrument], commit: bool = True,
                  sync_history: bool = False) -> dict[str, dict]:
     """Reconcile a set of rows against one batch live download."""
+    if not live_quotes_enabled():
+        return {}
     rows = list(rows)
     tickers: dict[str, str] = {}
     for row in rows:
