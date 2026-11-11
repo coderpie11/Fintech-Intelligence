@@ -37,7 +37,10 @@ DB_URL = f"sqlite:///{DB_PATH}"
 # a host with a persistent disk if you want to seed incrementally there.
 # ---------------------------------------------------------------------------
 SNAPSHOT_PATH = BASE_DIR / "data" / "seed" / "bfi.db.gz"
-_SNAPSHOT_MIN_BYTES = 1024 * 1024  # anything smaller is an empty/schema-only DB
+# The shipped snapshot holds the full seeded store (~390 MB uncompressed), so
+# anything materially smaller than ~150 MB is a schema-only/empty database and
+# must be replaced by the snapshot before the app serves traffic.
+_SNAPSHOT_MIN_BYTES = 150 * 1024 * 1024
 
 
 SNAPSHOT_STATE = {"restored": False, "error": None, "path": None}

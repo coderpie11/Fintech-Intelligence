@@ -293,9 +293,13 @@ def live_quotes_enabled() -> bool:
 
     Python is pinned to 3.11.9 so the cp314 C-extension segfault cannot occur,
     and the adapter downloads one 25-ticker batch at a time to keep the
-    512 MB instance inside its memory budget. A host can still opt out with
-    ENABLE_LIVE_QUOTES=0, but nothing disables quotes implicitly.
+    512 MB instance inside its memory budget. On Render the deployed service
+    must always serve live quotes, so a stale ``ENABLE_LIVE_QUOTES=false``
+    from an old blueprint must not silently turn them off. Elsewhere a host
+    can still opt out with ENABLE_LIVE_QUOTES=0.
     """
+    if os.getenv("RENDER"):
+        return True
     flag = os.getenv("ENABLE_LIVE_QUOTES")
     if flag is None:
         return True

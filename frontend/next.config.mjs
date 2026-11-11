@@ -8,7 +8,7 @@ const API_BASE = (
   process.env.NEXT_PUBLIC_API_URL ||
   (process.env.NODE_ENV === "development"
     ? "http://localhost:8000"
-    : "https://coderji-fintech-intelligence-api.hf.space")
+    : "https://fintech-intelligence-pmuw.onrender.com")
 ).replace(/\/+$/, "");
 
 /** @type {import('next').NextConfig} */

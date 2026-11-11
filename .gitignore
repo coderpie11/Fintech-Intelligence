@@ -4,6 +4,10 @@ __pycache__/
 .pytest_cache/
 backend/.env
 backend/data/*
+# The pre-seeded store ships as a gzip snapshot so a fresh Render boot comes
+# up with the full database instead of seeding inside the API process.
+!backend/data/seed/
+!backend/data/seed/bfi.db.gz
 backend/*.log
 
 # virtualenvs
