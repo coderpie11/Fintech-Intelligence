@@ -4,10 +4,6 @@ __pycache__/
 .pytest_cache/
 backend/.env
 backend/data/*
-# The pre-seeded store is shipped as a compressed snapshot so deploys come up
-# with data instead of seeding inside the API process.
-!backend/data/seed/
-!backend/data/seed/bfi.db.gz
 backend/*.log
 
 # virtualenvs

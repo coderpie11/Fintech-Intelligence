@@ -1,7 +1,7 @@
 // Local development always talks to the FastAPI backend on port 8000.
-// Production builds (Cloudflare Pages) talk to the Render backend unless
+// Production builds (Cloudflare Pages) talk to the Hugging Face Space unless
 // NEXT_PUBLIC_API_URL points somewhere else at build time.
-const PRODUCTION_API_ORIGIN = "https://fintech-intelligence-pmuw.onrender.com";
+const PRODUCTION_API_ORIGIN = "https://coderji-fintech-intelligence-api.hf.space";
 
 function isLocalRuntime(): boolean {
   if (process.env.NODE_ENV === "development") return true;
