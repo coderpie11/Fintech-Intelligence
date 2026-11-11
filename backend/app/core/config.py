@@ -40,25 +40,37 @@ SNAPSHOT_PATH = BASE_DIR / "data" / "seed" / "bfi.db.gz"
 _SNAPSHOT_MIN_BYTES = 1024 * 1024  # anything smaller is an empty/schema-only DB
 
 
+SNAPSHOT_STATE = {"restored": False, "error": None, "path": None}
+
+
 def restore_snapshot_if_missing() -> bool:
     """Materialise DB_PATH from the shipped snapshot when the DB is absent."""
     if os.getenv("RESTORE_SNAPSHOT", "1").strip().lower() in ("0", "false", "no"):
         return False
+    snapshot = SNAPSHOT_PATH
+    SNAPSHOT_STATE["path"] = str(snapshot)
     if DB_PATH.exists() and DB_PATH.stat().st_size >= _SNAPSHOT_MIN_BYTES:
         return False
-    if not SNAPSHOT_PATH.exists():
+    if not snapshot.exists():
+        SNAPSHOT_STATE["error"] = f"snapshot missing at {snapshot}"
         return False
-    tmp = DB_PATH.with_name(DB_PATH.name + ".restoring")
-    with gzip.open(SNAPSHOT_PATH, "rb") as src, open(tmp, "wb") as dst:
-        shutil.copyfileobj(src, dst, 1 << 20)
-    # A stale WAL/SHM pair from the empty database would be replayed over the
-    # restored file, so drop the sidecars before swapping it in.
-    for suffix in ("-wal", "-shm"):
-        sidecar = DB_PATH.with_name(DB_PATH.name + suffix)
-        if sidecar.exists():
-            sidecar.unlink()
-    os.replace(tmp, DB_PATH)
-    print(f"[db] restored pre-seeded snapshot ({SNAPSHOT_PATH.name}) -> {DB_PATH}")
+    try:
+        tmp = DB_PATH.with_name(DB_PATH.name + ".restoring")
+        with gzip.open(snapshot, "rb") as src, open(tmp, "wb") as dst:
+            shutil.copyfileobj(src, dst, 1 << 20)
+        # A stale WAL/SHM pair from the empty database would be replayed over
+        # the restored file, so drop the sidecars before swapping it in.
+        for suffix in ("-wal", "-shm"):
+            sidecar = DB_PATH.with_name(DB_PATH.name + suffix)
+            if sidecar.exists():
+                sidecar.unlink()
+        os.replace(tmp, DB_PATH)
+    except Exception as exc:  # noqa: BLE001 - never block startup on this
+        SNAPSHOT_STATE["error"] = f"{type(exc).__name__}: {exc}"
+        print(f"[db] snapshot restore failed: {SNAPSHOT_STATE['error']}")
+        return False
+    SNAPSHOT_STATE["restored"] = True
+    print(f"[db] restored pre-seeded snapshot ({snapshot.name}) -> {DB_PATH}")
     return True
 
 

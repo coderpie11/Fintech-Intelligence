@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.config import FREE_SOURCE_NOTE, cache_get
+from app.core.config import FREE_SOURCE_NOTE, SNAPSHOT_STATE, cache_get
 from app.core.db import get_db, SessionLocal
 from app.models.models import Instrument, SeedState
 from app.data.adapters import nse_adapter as N
@@ -26,7 +26,17 @@ _ALL_RUN = {"running": False}
 
 @router.get("/health")
 def health():
-    return {"status": "ok", "service": "Fintech Intelligence API", "version": "1.0.0"}
+    import os
+
+    return {
+        "status": "ok",
+        "service": "Fintech Intelligence API",
+        "version": "1.0.1",
+        # Render injects the deployed commit; handy for confirming which build
+        # is actually live. Empty locally.
+        "commit": (os.getenv("RENDER_GIT_COMMIT") or "")[:7],
+        "snapshot": SNAPSHOT_STATE,
+    }
 
 
 @router.get("/search")
