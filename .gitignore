@@ -37,3 +37,7 @@ tsconfig.tsbuildinfo
 # OS
 Thumbs.db
 .DS_Store
+
+# next-on-pages / vercel local cache
+.vercel/
+
