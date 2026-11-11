@@ -3,7 +3,7 @@
  *
  * Rewrites are baked into the routes manifest at build time, so set the
  * variable when building for production (Cloudflare Pages):
- *   NEXT_PUBLIC_API_URL=https://fintech-intelligence-backend.onrender.com
+ *   NEXT_PUBLIC_API_URL=https://fintech-intelligence-pmuw.onrender.com
  * Falls back to the local FastAPI port so `npm run dev` is unchanged.
  */
 const API_BASE = (

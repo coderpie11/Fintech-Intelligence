@@ -4,11 +4,9 @@ import "./globals.css";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 
-// Cloudflare Pages: render the whole App Router tree on the edge runtime.
-// Static segments are still prerendered at build time; this only decides the
-// runtime for anything evaluated on request (e.g. dynamic segments, 404).
-export const runtime = "edge";
-
+// NOTE: no `runtime` export here on purpose. Edge runtime is declared per
+// dynamic segment (app/*/[param]/layout.tsx) so every other route stays Static
+// (○) and is deployed as a plain asset by Cloudflare Pages.
 export const metadata: Metadata = {
   // Served from public/ as a plain static asset (not an app/ metadata route,
   // which Cloudflare would try to run as an edge function).

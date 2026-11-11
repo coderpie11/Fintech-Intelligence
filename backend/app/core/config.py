@@ -27,9 +27,14 @@ DB_URL = f"sqlite:///{DB_PATH}"
 
 BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8001"))
 
-# CORS: local Next.js dev server, plus any deployed frontend origins.
-# Set CORS_ORIGINS="https://app.pages.dev,https://custom.domain" on Render.
-CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+# CORS: local Next.js dev server, the deployed Cloudflare Pages frontends
+# (Pages preview/production hosts), plus anything added via CORS_ORIGINS.
+CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://fintech-intelligence.pages.dev",
+    "https://fintechintelligence.coderpie.tech",
+]
 CORS_ORIGINS += [
     origin.strip().rstrip("/")
     for origin in os.getenv("CORS_ORIGINS", "").split(",")
