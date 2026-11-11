@@ -20,8 +20,14 @@ services:
     healthCheckPath: /api/v1/health
     autoDeploy: true
     envVars:
+      # 3.14 has no cp314 wheels for curl_cffi/uvloop, and the source builds
+      # that get picked instead segfault the container (exit status 139).
       - key: PYTHON_VERSION
-        value: 3.10.0
+        value: 3.11.9
+      # Boot-time scraping/scheduling is off: the shipped snapshot is already
+      # seeded and the free 512 MB instance cannot afford a warmup pass.
+      - key: ENABLE_SCHEDULER
+        value: "false"
       # Public origin of the deployed Cloudflare Pages frontend, so the
       # browser can call the API directly when /bff rewrites are unavailable.
       - key: CORS_ORIGINS

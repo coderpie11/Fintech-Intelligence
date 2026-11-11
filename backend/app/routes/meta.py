@@ -24,7 +24,7 @@ router = APIRouter(tags=["system"])
 _ALL_RUN = {"running": False}
 
 
-@router.get("/health")
+@router.api_route("/health", methods=["GET", "HEAD"])
 def health():
     import os
 

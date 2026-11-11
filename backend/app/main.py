@@ -1,4 +1,5 @@
 """Fintech Intelligence — FastAPI application assembly."""
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -9,33 +10,43 @@ from app.core.db import create_all
 from app.routes import api
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() not in ("", "0", "false", "no")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     create_all()
-    # Warm the pulse payload before the first page view. This is a one-time
-    # arithmetic pass over the stored snapshot; doing it here keeps every HTTP
-    # request on the fast cached path.
-    try:
-        from app.core.db import SessionLocal
-        from app.routes import pulse as P
-
-        db = SessionLocal()
+    # Borderline-heavy background work is opt-in on purpose. On a 512 MB PaaS
+    # box the pre-seeded snapshot already holds every row, so boot has nothing
+    # to compute; warmups and schedulers only add network scrapers (yfinance /
+    # curl_cffi) to the cold start. Set ENABLE_SCHEDULER=1 on a host with room
+    # to spare; leave it unset where the snapshot is the source of truth.
+    if _env_flag("ENABLE_SCHEDULER"):
+        # Warm the pulse payload before the first page view. This is a one-time
+        # arithmetic pass over the stored snapshot; doing it here keeps every
+        # HTTP request on the fast cached path.
         try:
-            P.pulse(db)
+            from app.core.db import SessionLocal
+            from app.routes import pulse as P
+
+            db = SessionLocal()
+            try:
+                P.pulse(db)
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                db.close()
         except Exception:  # noqa: BLE001
             pass
-        finally:
-            db.close()
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from apscheduler.schedulers.background import BackgroundScheduler
-        sched = BackgroundScheduler(timezone="Asia/Kolkata")
-        sched.add_job(_nightly_refresh, "cron", hour=18, minute=30,
-                      max_instances=1, id="nightly_refresh")
-        sched.start()
-    except Exception:
-        pass
+        try:
+            from apscheduler.schedulers.background import BackgroundScheduler
+            sched = BackgroundScheduler(timezone="Asia/Kolkata")
+            sched.add_job(_nightly_refresh, "cron", hour=18, minute=30,
+                          max_instances=1, id="nightly_refresh")
+            sched.start()
+        except Exception:  # noqa: BLE001
+            pass
     yield
 
 
@@ -64,8 +75,9 @@ app.add_middleware(
 app.include_router(api)
 
 
-@app.get("/")
+# Render probes the port with `HEAD /`, so the root must answer HEAD as well as
+# GET (a GET-only route returns 405 and the deploy is marked unhealthy).
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"service": "Fintech Intelligence API",
             "docs": "/docs", "health": "/api/v1/health"}
-
