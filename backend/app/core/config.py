@@ -6,7 +6,9 @@ Windows and Linux with zero extra setup.
 """
 from __future__ import annotations
 
+import gzip
 import os
+import shutil
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -20,10 +22,48 @@ ROOT_DIR = BASE_DIR.parent
 load_dotenv(ROOT_DIR / ".env", override=False)
 load_dotenv(BASE_DIR / ".env", override=False)
 
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = Path(os.getenv("DATA_DIR") or (BASE_DIR / "data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "bfi.db"
 DB_URL = f"sqlite:///{DB_PATH}"
+
+# ---------------------------------------------------------------------------
+# Pre-seeded store snapshot
+#
+# PaaS filesystems are ephemeral, and seeding the whole universe inside a
+# 0.5-CPU container starves the health check until the platform kills the
+# instance. Instead we ship a gzip of a fully seeded SQLite file and restore it
+# the first time a process finds no usable database. Set RESTORE_SNAPSHOT=0 on
+# a host with a persistent disk if you want to seed incrementally there.
+# ---------------------------------------------------------------------------
+SNAPSHOT_PATH = BASE_DIR / "data" / "seed" / "bfi.db.gz"
+_SNAPSHOT_MIN_BYTES = 1024 * 1024  # anything smaller is an empty/schema-only DB
+
+
+def restore_snapshot_if_missing() -> bool:
+    """Materialise DB_PATH from the shipped snapshot when the DB is absent."""
+    if os.getenv("RESTORE_SNAPSHOT", "1").strip().lower() in ("0", "false", "no"):
+        return False
+    if DB_PATH.exists() and DB_PATH.stat().st_size >= _SNAPSHOT_MIN_BYTES:
+        return False
+    if not SNAPSHOT_PATH.exists():
+        return False
+    tmp = DB_PATH.with_name(DB_PATH.name + ".restoring")
+    with gzip.open(SNAPSHOT_PATH, "rb") as src, open(tmp, "wb") as dst:
+        shutil.copyfileobj(src, dst, 1 << 20)
+    # A stale WAL/SHM pair from the empty database would be replayed over the
+    # restored file, so drop the sidecars before swapping it in.
+    for suffix in ("-wal", "-shm"):
+        sidecar = DB_PATH.with_name(DB_PATH.name + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
+    os.replace(tmp, DB_PATH)
+    print(f"[db] restored pre-seeded snapshot ({SNAPSHOT_PATH.name}) -> {DB_PATH}")
+    return True
+
+
+# Import-time so it runs before any engine connects or create_all() runs.
+restore_snapshot_if_missing()
 
 BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8001"))
 

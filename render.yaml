@@ -1,13 +1,13 @@
 # Render blueprint — Fintech Intelligence FastAPI backend
 #
 # One-click deploy: Render Dashboard → New → Blueprint → pick this repo.
-# After the first boot the SQLite store is empty; populate it once with:
-#   curl -X POST https://<service>.onrender.com/api/v1/refresh/all
-# (or run `python -m app.seed.seed` from the Render shell).
+# The service ships a compressed snapshot of a fully seeded SQLite store
+# (backend/data/seed/bfi.db.gz); app/core/config.py restores it on first boot,
+# so a fresh deploy comes up with data — no seeding call needed.
 #
-# NOTE: Render's filesystem is ephemeral on the free/starter plans, so
-# backend/data/bfi.db is rebuilt on every deploy. Attach a persistent disk
-# and set DATA_DIR if you need the imported history to survive restarts.
+# NOTE: Render's filesystem is ephemeral on the free/starter plans, so the
+# restored backend/data/bfi.db is rebuilt on every deploy/restart. Attach a
+# persistent disk + DATA_DIR only if you need locally-written rows to survive.
 
 services:
   - type: web
