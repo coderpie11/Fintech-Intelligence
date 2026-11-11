@@ -1,9 +1,9 @@
 # Render blueprint — Fintech Intelligence FastAPI backend
 #
 # One-click deploy: Render Dashboard → New → Blueprint → pick this repo.
-# The service ships a compressed snapshot of a fully seeded SQLite store
-# (backend/data/seed/bfi.db.gz); app/core/config.py restores it on first boot,
-# so a fresh deploy comes up with data — no seeding call needed.
+# The service ships a compressed snapshot of the fully seeded SQLite store
+# (backend/data/seed/bfi.db.gz); app/core/config.py and backend/run.py restore
+# it on first boot, so a fresh deploy comes up with data — no seeding call.
 #
 # NOTE: Render's filesystem is ephemeral on the free/starter plans, so the
 # restored backend/data/bfi.db is rebuilt on every deploy/restart. Attach a
@@ -24,15 +24,15 @@ services:
       # that get picked instead segfault the container (exit status 139).
       - key: PYTHON_VERSION
         value: 3.11.9
-      # Boot-time scraping/scheduling is off: the shipped snapshot is already
-      # seeded and the free 512 MB instance cannot afford a warmup pass.
+      # Boot-time warmups stay off on the 512 MB instance. The snapshot already
+      # holds every row; user requests still fetch live quotes and build charts.
       - key: ENABLE_SCHEDULER
         value: "false"
-      # Serve prices from the snapshot; do not call yfinance/curl_cffi from
-      # request threads (that C-extension path is what crashed with exit 139).
+      # Live quotes stay on. The adapter caps each Yahoo batch at 25 tickers,
+      # runs one batch at a time, and calls gc.collect() after each batch.
       - key: ENABLE_LIVE_QUOTES
-        value: "false"
-      # Public origin of the deployed Cloudflare Pages frontend, so the
+        value: "true"
+      # Public origins of the deployed Cloudflare Pages frontend, so the
       # browser can call the API directly when /bff rewrites are unavailable.
       - key: CORS_ORIGINS
-        sync: false
+        value: https://fintech-intelligence.pages.dev,https://fintechintelligence.coderpie.tech

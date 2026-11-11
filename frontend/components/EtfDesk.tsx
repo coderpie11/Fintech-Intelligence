@@ -9,6 +9,7 @@ import {
 } from "@/components/PageKit";
 import MetricTip, { type Tip } from "@/components/MetricTip";
 import LineChart from "@/components/LineChart";
+import Sparkline from "@/components/Sparkline";
 
 type EtfRow = {
   symbol: string;
@@ -33,6 +34,7 @@ type EtfRow = {
   returns: Record<string, Env>;
   benchmark?: string;
   has_history: boolean;
+  spark?: number[];
   href: string;
   quote_source?: string;
 };
@@ -90,6 +92,7 @@ const ETF_TYPES = [
 ];
 
 const PERIODS = [
+  { key: "1w", label: "1 Week (1W)" },
   { key: "1m", label: "1 Month (1M)" },
   { key: "3m", label: "3 Months (3M)" },
   { key: "6m", label: "6 Months (6M)" },
@@ -273,6 +276,7 @@ export function EtfList() {
                       <td className="px-3 py-2.5 min-w-[230px]">
                         <Link href={e.href} className="text-[12.5px] font-bold hover:underline">{e.symbol}</Link>
                         <div className="muted text-[10.5px] truncate max-w-[260px]">{e.name}</div>
+                        <Sparkline points={e.spark} width={130} height={26} className="mt-1" />
                       </td>
                       <td className="px-2.5 py-2.5 muted text-[11px]">{e.category || "—"}</td>
                       <td className="px-2.5 py-2.5 text-right knum text-[12px] font-semibold">{envNum(e.ltp) != null ? inr(envNum(e.ltp)) : "—"}</td>

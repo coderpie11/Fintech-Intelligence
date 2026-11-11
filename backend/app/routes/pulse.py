@@ -57,9 +57,9 @@ def _background_refresh() -> None:
                     return 0.0
 
             candidates.sort(key=_mcap, reverse=True)
-            LQ.refresh_rows(s, candidates[:120])
+            LQ.list_rows(s, candidates[:120], cap=120)
             idx_rows = s.query(Instrument).filter(Instrument.kind == "INDEX").all()
-            LQ.refresh_rows(s, idx_rows)
+            LQ.list_rows(s, idx_rows)
         except Exception:  # noqa: BLE001
             pass
         finally:

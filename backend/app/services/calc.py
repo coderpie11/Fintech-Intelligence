@@ -248,9 +248,9 @@ def reverse_dcf_growth(fcff_millions: float, terminal_pct: float, wacc_pct: floa
 # ---------- Mutual-fund metrics -------------------------
 
 def nav_returns(navs: list[dict]) -> dict:
-    """1M/3M/6M/1Y/3Y/5Y point-to-point returns from an ascending NAV series."""
+    """1W/1M/3M/6M/1Y/3Y/5Y point-to-point returns from an ascending NAV series."""
     if not navs or len(navs) < 2:
-        return {k: None for k in ("1m", "3m", "6m", "1y", "3y", "5y")}
+        return {k: None for k in ("1w", "1m", "3m", "6m", "1y", "3y", "5y")}
     vals = [n["nav"] for n in navs]
 
     def simple(n):
@@ -263,8 +263,8 @@ def nav_returns(navs: list[dict]) -> dict:
         n = min(n, len(vals) - 1)
         return cagr(vals[-1 - n], vals[-1], n / 252)
 
-    return {"1m": simple(21), "3m": simple(63), "6m": simple(126),
-            "1y": simple(252), "3y": annual(756),
+    return {"1w": simple(5), "1m": simple(21), "3m": simple(63),
+            "6m": simple(126), "1y": simple(252), "3y": annual(756),
             "5y": annual(min(len(vals) - 1, 1260))}
 
 

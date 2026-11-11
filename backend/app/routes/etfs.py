@@ -11,11 +11,13 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
+from app.core.config import cache_get, cache_set
 from app.data.adapters import nse_adapter as N
 from app.data.adapters import yfinance_adapter as Y
 from app.models.models import Instrument
 from app.seed.universe import ETF_UNIVERSE, fallback_history
 from app.services import calc
+from app.services import instrument_engine as IE
 from app.services.contextual import reported, source_issue
 
 router = APIRouter(prefix="/etfs", tags=["etfs"])
@@ -44,12 +46,27 @@ def _num(v):
         return None
 
 
+_ETF_FEED_TTL = 180
+
+
 def _quote_map() -> dict[str, dict]:
+    """One NSE /api/etf snapshot, cached for every ETF card on the desk.
+
+    The feed covers the whole curated universe, so re-fetching it per request
+    only adds seconds to first paint. Outside the session the stored snapshot
+    is already the final print, and the cache keeps it served instantly.
+    """
+    cached = cache_get("nse:etf_list")
+    if cached is not None:
+        return cached
     try:
         rows = N.nse.etf_list()
-        return {str(r.get("symbol") or "").upper(): r for r in rows}
     except Exception:  # noqa: BLE001
         return {}
+    live = {str(r.get("symbol") or "").upper(): r for r in rows}
+    if live:
+        cache_set("nse:etf_list", live, ttl=_ETF_FEED_TTL)
+    return live
 
 
 def _history(symbol: str) -> list[dict]:
@@ -264,6 +281,7 @@ def _row(symbol: str, spec: dict, q: dict, hist: list[dict],
         "ter_pct": _env(spec.get("ter_pct") or _ETF_TER.get(symbol), "expense ratio"),
         "benchmark": spec.get("benchmark"),
         "has_history": bool(hist),
+        "spark": IE.spark_from_bars(hist, last=ltp, prev=prev),
         "href": f"/etfs/{symbol}",
         "quote_source": "NSE /api/etf" if q else "Yahoo Finance daily close",
     }
@@ -293,6 +311,7 @@ def list_etfs(db: Session = Depends(get_db)):
     deterministic series in ``universe.py`` and is labelled as modelled."""
     qmap = _quote_map()
     stored = _stored_map(db)
+    IE.ensure_many(db, stored.values())
     out = []
     for spec in ETF_UNIVERSE:
         sym = spec["symbol"]
@@ -394,19 +413,17 @@ def etf_detail(symbol: str, db: Session = Depends(get_db)):
     spec = SPECS.get(sym)
     if not spec:
         raise HTTPException(404, "This ETF is not in the curated NSE universe.")
+    rec = (db.query(Instrument).filter_by(kind="ETF", symbol=sym).one_or_none())
+    if rec:
+        IE.ensure_instrument_ready(db, rec)
     q = _quote_map().get(sym) or {}
     hist = _history(sym)
     if not hist:
-        rec = (db.query(Instrument).filter_by(kind="ETF", symbol=sym)
-                 .one_or_none())
         hist = list(rec.history or []) if rec else []
     if not hist:
         hist = fallback_history(spec)
-    if not q:
-        rec = (db.query(Instrument).filter_by(kind="ETF", symbol=sym)
-                 .one_or_none())
-        if rec:
-            q = _quote_from_meta(rec.meta or {})
+    if not q and rec:
+        q = _quote_from_meta(rec.meta or {})
     row = _row(sym, spec, q, hist, db)
     bench, bench_meta = _benchmark(db, spec)
     te = calc.tracking_error(_navs(hist), bench) if bench else None
@@ -455,18 +472,29 @@ class VsIndexBody(BaseModel):
 
 
 @router.get("/{symbol}/intraday")
-def etf_intraday(symbol: str, interval: str = "5m",
+def etf_intraday(symbol: str, interval: str = "2m",
                  db: Session = Depends(get_db)):
     sym = symbol.upper()
     spec = SPECS.get(sym)
     if not spec:
         raise HTTPException(404, "This ETF is not in the curated NSE universe.")
+    rec = (db.query(Instrument).filter_by(kind="ETF", symbol=sym).one_or_none())
+    if rec:
+        IE.ensure_instrument_ready(db, rec)
     q = _quote_map().get(sym) or {}
     hist = _history(sym)
-    prev = _num(q.get("prevClose")) or (hist[-2]["c"] if len(hist) > 1 else None)
+    if not hist and rec:
+        hist = list(rec.history or [])
+    meta = (rec.meta or {}) if rec else {}
+    ltp = _num(q.get("ltP")) or _num(meta.get("lastPrice"))
+    prev = _num(q.get("prevClose")) or _num(meta.get("prevClose")) or (hist[-2]["c"] if len(hist) > 1 else None)
     try:
         data = Y.intraday(f"{sym}.NS", interval=interval, period="5d")
         if len(data.get("points") or []) >= 2:
+            data["points"] = IE.stitch_live_point(
+                data["points"],
+                {"lastPrice": ltp, "live_time": meta.get("live_time"),
+                 "volume": _num(q.get("qty")) or meta.get("volume")})
             data["last"] = data["points"][-1]["c"]
             data["prevClose"] = prev
             if prev:
@@ -477,15 +505,18 @@ def etf_intraday(symbol: str, interval: str = "5m",
     except Exception:  # noqa: BLE001
         pass
     if len(hist) >= 2:
+        points = [{"datetime": h["date"], "date": h["date"], "time": "15:30",
+                   "o": h.get("o"), "h": h.get("h"), "l": h.get("l"),
+                   "c": h["c"], "v": h.get("v")} for h in hist[-60:]]
+        points = IE.stitch_live_point(
+            points, {"lastPrice": ltp, "live_time": meta.get("live_time")})
         return {
             "ticker": f"{sym}.NS", "interval": "1d", "session": hist[-1]["date"],
             "source": "Yahoo Finance daily candles (intraday feed unavailable)",
-            "points": [{"datetime": h["date"], "date": h["date"], "time": "15:30",
-                        "o": h.get("o"), "h": h.get("h"), "l": h.get("l"),
-                        "c": h["c"], "v": h.get("v")} for h in hist[-60:]],
-            "last": hist[-1]["c"], "prevClose": prev,
-            "change": (round(hist[-1]["c"] - prev, 2) if prev else None),
-            "changepct": (round((hist[-1]["c"] / prev - 1) * 100, 2)
+            "points": points,
+            "last": points[-1]["c"], "prevClose": prev,
+            "change": (round(points[-1]["c"] - prev, 2) if prev else None),
+            "changepct": (round((points[-1]["c"] / prev - 1) * 100, 2)
                           if prev else None),
             "note": "The intraday feed did not answer; the last 60 daily closes "
                     "are shown instead of fabricating candles.",

@@ -6,6 +6,9 @@ the platform never reads Yahoo directly outside this module.
 from __future__ import annotations
 
 import datetime as dt
+import gc
+import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
@@ -142,7 +145,7 @@ def live_sessions(ticker: str, period: str = "5d", interval: str = "5m") -> list
 
 
 def live_sessions_batch(tickers: list[str], period: str = "5d",
-                        interval: str = "5m", chunk: int = 45) -> dict[str, list[dict]]:
+                        interval: str = "5m", chunk: int = 25) -> dict[str, list[dict]]:
     """Batch live sessions for screener/indices/home lists.
 
     Cached per ticker for 15 seconds. Only cache misses are downloaded, in
@@ -157,14 +160,28 @@ def live_sessions_batch(tickers: list[str], period: str = "5d",
             out[t] = hit
         else:
             missing.append(t)
-    for start in range(0, len(missing), chunk):
-        batch = missing[start:start + chunk]
+
+    def fetch(batch: list[str]):
         try:
-            df = yf.download(batch, period=period, interval=interval,
-                             group_by="ticker", progress=False, threads=True,
-                             auto_adjust=False)
+            return yf.download(batch, period=period, interval=interval,
+                               group_by="ticker", progress=False, threads=True,
+                               auto_adjust=False)
         except Exception:  # noqa: BLE001
-            df = None
+            return None
+
+    chunks = [missing[i:i + chunk] for i in range(0, len(missing), chunk)]
+    if len(chunks) > 1:
+        # Wide pages are split into 25-ticker batches. Run one batch at a time
+        # so Render's 512 MB box never holds several Yahoo frames at once.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            frames = list(pool.map(fetch, chunks))
+    else:
+        frames = [fetch(c) for c in chunks]
+
+    if os.getenv("RENDER"):
+        gc.collect()
+
+    for batch, df in zip(chunks, frames):
         for t in batch:
             sessions: list[dict] = []
             try:
@@ -176,6 +193,8 @@ def live_sessions_batch(tickers: list[str], period: str = "5d",
             out[t] = sessions
             cache_set(f"yf:live:{t}:{interval}:{period}", sessions,
                       ttl=LIVE_TTL if sessions else 5)
+    if os.getenv("RENDER"):
+        gc.collect()
     return out
 
 

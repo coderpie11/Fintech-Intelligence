@@ -1,11 +1,22 @@
-// Deployed API. Used unless NEXT_PUBLIC_API_URL overrides it at build time.
-// A value of "/bff" keeps same-origin proxying for local development.
-const DEFAULT_API_ORIGIN = "https://fintech-intelligence-pmuw.onrender.com";
-const RAW = (process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_ORIGIN).trim();
-const API_ORIGIN = RAW.replace(/\/+$/, "");
-export const API = API_ORIGIN && API_ORIGIN !== "/bff"
-  ? `${API_ORIGIN}/api/v1`
-  : "/bff/api/v1";
+// Local development always talks to the FastAPI backend on port 8000.
+// Production builds (Cloudflare Pages) talk to the Render backend unless
+// NEXT_PUBLIC_API_URL points somewhere else at build time.
+const PRODUCTION_API_ORIGIN = "https://fintech-intelligence-pmuw.onrender.com";
+
+function isLocalRuntime(): boolean {
+  if (process.env.NODE_ENV === "development") return true;
+  if (typeof window === "undefined") return false;
+  const host = window.location.hostname;
+  return host === "localhost" || host === "127.0.0.1";
+}
+
+const API_ORIGIN = (
+  isLocalRuntime()
+    ? "http://localhost:8000"
+    : process.env.NEXT_PUBLIC_API_URL || PRODUCTION_API_ORIGIN
+).replace(/\/+$/, "");
+
+export const API = `${API_ORIGIN}/api/v1`;
 
 export type Env<T = any> = {
   value: T | null;

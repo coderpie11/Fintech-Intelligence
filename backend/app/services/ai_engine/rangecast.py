@@ -68,32 +68,16 @@ def _resolve(db: Session, symbol: str) -> tuple[Instrument | None, str]:
     if row:
         return row, "EQUITY"
 
-    # The user may type a company name, a partial name or a misspelling
-    # ("PARAS DEFENCE", "paras", "reliance industries"). Match it against the
-    # tracked equity/index universe before giving up.
-    candidates = (db.query(Instrument)
-                    .filter(Instrument.kind.in_(("EQUITY", "INDEX")))
-                    .all())
+    # Any listed instrument can be ranged: equity, index, ETF or commodity.
+    # The shared resolver matches tickers, names and phrases the same way the
+    # Ask Dalal surface does, so "gold" reaches the commodity row and
+    # "pc jewellers" reaches PCJEWELLER.
+    from app.services.ai_engine import entity
 
-    def pick(text: str, floor: float) -> Instrument | None:
-        ranked = fuzzy.rank(text, candidates,
-                            lambda r: f"{r.symbol} {r.name}",
-                            limit=1, floor=floor)
-        return ranked[0] if ranked else None
-
-    found = pick(raw, 0.62)
-    if found is None:
-        # Try the significant words individually; the full sentence around a
-        # company name is often too noisy for one fuzzy score.
-        for token in sorted(fuzzy.tokens(raw), key=len, reverse=True)[:4]:
-            if len(token) < 3:
-                continue
-            found = pick(token, 0.74)
-            if found:
-                break
+    found = entity.resolve(db, raw)
     if found is None:
         return None, "EQUITY"
-    return found, "INDEX" if found.kind == "INDEX" else "EQUITY"
+    return found, found.kind
 
 
 def _spot(row: Instrument) -> float | None:
@@ -114,11 +98,54 @@ def _log_returns(closes: list[float]) -> list[float]:
 
 def _daily_sigma(closes: list[float], window: int = 252,
                  min_obs: int = 30) -> float | None:
+    """Volatility estimate that survives single-day gaps and regime shifts.
+
+    Daily log returns are winsorised at the 2.5th/97.5th percentiles so one
+    circuit-limit day cannot inflate the band for a month, then a simple
+    standard deviation is blended with an EWMA (λ = 0.94) estimate so a
+    genuine change in regime still moves the band. Both steps are universal —
+    every equity, index and ETF gets the same treatment.
+    """
     tail = closes[-(window + 1):]
-    rets = _log_returns(tail)
+    rets = _winsorised(_log_returns(tail))
     if len(rets) < min_obs:
         return None
-    return statistics.stdev(rets)
+    simple = statistics.stdev(rets)
+    ewma = _ewma_sigma(rets)
+    if ewma is None:
+        return simple
+    return 0.5 * simple + 0.5 * ewma
+
+
+def _winsorised(rets: list[float], lo: float = 0.025,
+                hi: float = 0.975) -> list[float]:
+    if len(rets) < 20:
+        return rets
+    ordered = sorted(rets)
+    lo_v = ordered[int(lo * (len(ordered) - 1))]
+    hi_v = ordered[int(hi * (len(ordered) - 1))]
+    return [min(max(r, lo_v), hi_v) for r in rets]
+
+
+def _ewma_sigma(rets: list[float], lam: float = 0.94) -> float | None:
+    if len(rets) < 20:
+        return None
+    var = statistics.pvariance(rets[:20])
+    for r in rets[20:]:
+        var = lam * var + (1 - lam) * r * r
+    return math.sqrt(var) if var > 0 else None
+
+
+def _horizon_scale(days: int) -> float:
+    """Damped Brownian scaling for multi-week horizons.
+
+    Plain √h assumes independent days and overstates a 30-day envelope on a
+    mean-reverting market. Beyond one week the exponent decays to 0.42, which
+    keeps 7-day bands unchanged while producing institutionally plausible
+    14/21/30-day ranges.
+    """
+    h = max(int(days), 1)
+    return h ** (0.5 if h <= 7 else 0.42)
 
 
 def _rolling_sigma(closes: list[float], window: int = 20) -> list[float | None]:
@@ -299,6 +326,14 @@ def build(db: Session, symbol: str, horizon_days: int = 7) -> dict:
     row, kind = _resolve(db, symbol)
     if row is None:
         raise LookupError(f"{symbol} is not in the tracked equity/index universe.")
+    # Self-heal on demand: any listed instrument gets its quote, 52-week range
+    # and daily series repaired before the band is computed.
+    try:
+        from app.services import instrument_engine as IE
+
+        IE.ensure_instrument_ready(db, row)
+    except Exception:  # noqa: BLE001
+        pass
     hist = [h for h in (row.history or []) if h.get("c") is not None]
     closes = [float(h["c"]) for h in hist]
     spot = _spot(row)
@@ -311,8 +346,9 @@ def build(db: Session, symbol: str, horizon_days: int = 7) -> dict:
         raise LookupError(f"{symbol} needs at least 30 usable sessions for a "
                           "volatility estimate.")
     annual_vol = sigma_d * math.sqrt(252) * 100
-    bands = {str(ci): [round(spot * (1 - z * sigma_d * math.sqrt(horizon_days)), 2),
-                       round(spot * (1 + z * sigma_d * math.sqrt(horizon_days)), 2)]
+    scale = _horizon_scale(horizon_days)
+    bands = {str(ci): [round(spot * (1 - z * sigma_d * scale), 2),
+                       round(spot * (1 + z * sigma_d * scale), 2)]
              for ci, z in Z.items()}
     lo80, hi80 = bands["80"]
 
@@ -345,7 +381,8 @@ def build(db: Session, symbol: str, horizon_days: int = 7) -> dict:
             "daily_pct": round(sigma_d * 100, 3),
             "annualised_pct": round(annual_vol, 2),
             "sessions_used": min(len(closes) - 1, 252),
-            "method": "standard deviation of daily log returns, last 252 sessions",
+            "method": ("winsorised (2.5/97.5 pct) daily log returns, last 252 "
+                       "sessions, blended 50/50 with an EWMA λ = 0.94 estimate"),
         },
         "bands": bands,
         "band_80": reported([lo80, hi80],
@@ -365,11 +402,13 @@ def build(db: Session, symbol: str, horizon_days: int = 7) -> dict:
         "regime_backtest": _regime_backtest(closes, horizon_days),
         "touch_probabilities_pct": touch,
         "method_note": reported(
-            "Band = spot ± z × σ_daily × √h, where σ_daily is the standard "
-            "deviation of the last 252 daily log returns. At 80% confidence "
-            "z = 1.2816. The touch probability is the drift-free Brownian "
-            "first-passage probability 2·(1−Φ(z)) — a property of the model, "
-            "not a market call."),
+            "Band = spot ± z × σ_daily × h^p, where σ_daily blends a "
+            "winsorised standard deviation with an EWMA estimate of the last "
+            "252 daily log returns, and p = 0.5 for horizons up to one week "
+            "and 0.42 beyond it (damped scaling for mean reversion). At 80% "
+            "confidence z = 1.2816. The touch probability is the drift-free "
+            "Brownian first-passage probability 2·(1−Φ(z)) — a property of "
+            "the model, not a market call."),
         "disclaimer": ("Probabilistic and market-structure analysis computed "
                        "locally from public exchange data. Not investment "
                        "advice and not a buy/sell recommendation."),

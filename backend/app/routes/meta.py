@@ -1,13 +1,11 @@
 """System endpoints: health, market status, global search, source registry,
 and the module refresh trigger."""
-import threading
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.config import FREE_SOURCE_NOTE, SNAPSHOT_STATE, cache_get
+from app.core.config import FREE_SOURCE_NOTE, cache_get
 from app.core.db import get_db, SessionLocal
 from app.models.models import Instrument, SeedState
 from app.data.adapters import nse_adapter as N
@@ -18,30 +16,10 @@ from app.services.contextual import source_issue, reported
 
 router = APIRouter(tags=["system"])
 
-# One full seed at a time. The work runs in a daemon thread because seeding every
-# stage takes minutes -- far longer than a PaaS request timeout (Render closes
-# idle HTTP requests long before that), so the POST must return immediately.
-_ALL_RUN = {"running": False}
 
-
-@router.api_route("/health", methods=["GET", "HEAD"])
+@router.get("/health")
 def health():
-    import os
-    import platform
-
-    from app.services.live_quote import live_quotes_enabled
-
-    return {
-        "status": "ok",
-        "service": "Fintech Intelligence API",
-        "version": "1.0.2",
-        # Render injects the deployed commit; handy for confirming which build
-        # is actually live. Empty locally.
-        "commit": (os.getenv("RENDER_GIT_COMMIT") or "")[:7],
-        "python": platform.python_version(),
-        "live_quotes": live_quotes_enabled(),
-        "snapshot": SNAPSHOT_STATE,
-    }
+    return {"status": "ok", "service": "Fintech Intelligence API", "version": "1.0.0"}
 
 
 @router.get("/search")
@@ -377,37 +355,12 @@ def sources():
 
 @router.post("/refresh/{stage}")
 def refresh(stage: str, db: Session = Depends(get_db)):
-    if stage == "all":
-        if _ALL_RUN["running"]:
-            return {"stage": "all", "status": "already_running",
-                    "message": "A full seed is already in progress; poll "
-                               "/api/v1/seed/state."}
-        _ALL_RUN["running"] = True
-
-        def _bg_all() -> None:
-            try:
-                SEED.run_all()
-                bg = SessionLocal()
-                try:
-                    SEED.state_set(
-                        bg, "stage:all:done",
-                        __import__("datetime").datetime.utcnow().isoformat())
-                    bg.commit()
-                finally:
-                    bg.close()
-            except Exception as e:  # noqa: BLE001
-                print(f"[refresh] all failed: {type(e).__name__} {e}")
-            finally:
-                _ALL_RUN["running"] = False
-
-        threading.Thread(target=_bg_all, daemon=True).start()
-        return {"stage": "all", "status": "started",
-                "message": "Seeding every stage in a background thread; poll "
-                           "/api/v1/seed/state for stage:*:done keys."}
     valid = [k for k, _ in SEED.STAGES]
     if stage not in valid:
         raise HTTPException(404, f"Unknown stage. Valid: {', '.join(valid)}")
     if stage in ("funds", "etfs", "equity_fundamentals"):
+        import threading
+
         def _bg(key: str) -> None:
             bg = SessionLocal()
             try:

@@ -16,6 +16,7 @@ from app.data.adapters import nse_adapter as N
 from app.data.adapters import yfinance_adapter as Y
 from app.models.models import Instrument
 from app.services import calc
+from app.services import instrument_engine as IE
 from app.services.contextual import not_applicable, not_disclosed, reported, source_issue
 
 router = APIRouter(prefix="/commodities", tags=["commodities"])
@@ -34,6 +35,10 @@ def _row(r: Instrument) -> dict:
         "unit": _env(m.get("unit"), "unit"),
         "last": _env(m.get("last"), "international price"),
         "changepct": _env(m.get("changepct"), "day change"),
+        "prev_close": _env(m.get("prevClose"), "previous close"),
+        "week52_high": _env(m.get("week52_high") or m.get("yearHigh"), "52-week high"),
+        "week52_low": _env(m.get("week52_low") or m.get("yearLow"), "52-week low"),
+        "spark": IE.sparkline(r),
         "usd_per_oz": _env(m.get("usd_per_oz"), "USD per ounce"),
         "inr_per_gram_24k": _env(m.get("inr_gram_24k"), "24K ₹/gram"),
         "inr_per_10g_24k": _env(m.get("inr_10g_24k"), "24K ₹/10g"),
@@ -51,6 +56,7 @@ def _row(r: Instrument) -> dict:
 @router.get("")
 def list_commodities(db: Session = Depends(get_db)):
     rows = (db.query(Instrument).filter(Instrument.kind == "COMMODITY").all())
+    IE.ensure_many(db, rows)
     out = [_row(r) for r in rows]
     gold = next((x for x in out if x["symbol"] == "GOLD"), None)
     silver = next((x for x in out if x["symbol"] == "SILVER"), None)
@@ -72,6 +78,7 @@ def commodity_detail(symbol: str, db: Session = Depends(get_db)):
              .one_or_none())
     if not row:
         raise HTTPException(404, "Unknown commodity")
+    IE.ensure_instrument_ready(db, row)
     hist = row.history or []
     meta = row.meta or {}
     # Convert the USD/oz series into the Indian unit the desk quotes, using the
@@ -121,6 +128,8 @@ def commodity_detail(symbol: str, db: Session = Depends(get_db)):
                            "Indicative — MCX adds duties and premia."),
             "history_points": len(hist),
             "stats": stats,
+            "returns": {k: _env(v, f"{k.upper()} return")
+                        for k, v in IE.ladder_from_closes(closes).items()},
             "source_note": meta.get("inr_formula")}
 
 
@@ -408,14 +417,18 @@ def _usdinr_now(db: Session) -> float | None:
     return None
 
 
-def _metal_intraday(db: Session, symbol: str, interval: str = "5m") -> dict:
+def _metal_intraday(db: Session, symbol: str, interval: str = "2m") -> dict:
     spec = _METAL_INTRADAY[symbol]
     ticker, factor, unit = spec
     rate = _usdinr_now(db)
     metal = db.query(Instrument).filter_by(kind="COMMODITY", symbol=symbol).one_or_none()
+    if metal:
+        IE.ensure_instrument_ready(db, metal)
     meta = (metal.meta or {}) if metal else {}
     prev = meta.get("prevClose")
     prev_inr = round(prev * rate * factor, 2) if prev and rate else None
+    live = meta.get("lastPrice") or meta.get("last")
+    live_inr = round(live * rate * factor, 2) if live and rate else None
 
     def convert(rows: list[dict]) -> list[dict]:
         out = []
@@ -435,6 +448,8 @@ def _metal_intraday(db: Session, symbol: str, interval: str = "5m") -> dict:
         data = Y.intraday(ticker, interval=interval, period="5d")
         points = convert(data.get("points") or [])
         if len(points) >= 2:
+            points = IE.stitch_live_point(
+                points, {"lastPrice": live_inr, "live_time": meta.get("live_time")})
             return {
                 **data,
                 "symbol": symbol, "unit": unit, "usdinr": rate,
@@ -456,6 +471,8 @@ def _metal_intraday(db: Session, symbol: str, interval: str = "5m") -> dict:
         for h in hist[-60:]
     ])
     if len(points) >= 2:
+        points = IE.stitch_live_point(
+            points, {"lastPrice": live_inr, "live_time": meta.get("live_time")})
         last, prev_bar = points[-1], points[-2]
         return {
             "symbol": symbol, "unit": unit, "usdinr": rate,
@@ -510,7 +527,7 @@ def ratio_intraday(db: Session = Depends(get_db)):
 
 
 @router.get("/{symbol}/intraday")
-def commodity_intraday(symbol: str, interval: str = "5m",
+def commodity_intraday(symbol: str, interval: str = "2m",
                        db: Session = Depends(get_db)):
     key = symbol.upper()
     if key not in _METAL_INTRADAY:

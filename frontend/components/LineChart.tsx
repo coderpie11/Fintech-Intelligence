@@ -283,11 +283,21 @@ export default function LineChart({
   const line = visible.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(2)},${y(p.close).toFixed(2)}`).join(" ");
   const area = `${line} L${x(visible.length - 1).toFixed(2)},${priceBottom} L${x(0).toFixed(2)},${priceBottom} Z`;
 
-  const first = visible[0].close;
+  // Colour rule (applies to every chart on the platform):
+  //   * 1D compares the latest price with the previous session's close, so the
+  //     line agrees with the header's day-change percentage.
+  //   * Every longer range compares the last close with the first close of the
+  //     window that is actually drawn.
+  // Explicit hex values keep the line and its gradient identical in both
+  // themes; a CSS variable could resolve to an unexpected colour in a portal.
+  const UP = "#10b981";
+  const DOWN = "#ef4444";
+  const dayBase = num(prevClose) ?? (visible.length ? visible[0].close : null);
+  const first = range === "1D" ? (dayBase ?? visible[0].close) : visible[0].close;
   const last = visible[visible.length - 1].close;
   const periodReturn = first ? ((last / first) - 1) * 100 : 0;
-  const positive = periodReturn >= 0;
-  const color = stroke || (positive ? "var(--up)" : "var(--down)");
+  const positive = last >= first;
+  const color = stroke || (positive ? UP : DOWN);
 
   const hi = Math.max(...visible.map((p) => p.high));
   const lo = Math.min(...visible.map((p) => p.low));
@@ -344,6 +354,14 @@ export default function LineChart({
           <div>
             <div className="muted text-[10px] font-bold uppercase tracking-[0.14em]">Period low</div>
             <div className="knum text-[13.5px] font-bold">{val(lo)}</div>
+          </div>
+          <div>
+            <div className="muted text-[10px] font-bold uppercase tracking-[0.14em]">
+              {RANGES.find((r) => r.key === range)?.label ?? range} return
+            </div>
+            <div className="knum text-[13.5px] font-bold" style={{ color }}>
+              {pct(periodReturn)}
+            </div>
           </div>
         </div>
 
@@ -458,9 +476,9 @@ export default function LineChart({
 
           {/* period high / low guides */}
           <line x1={pad.l} x2={W - pad.r} y1={y(hi)} y2={y(hi)}
-                stroke="var(--up)" strokeWidth="0.7" strokeDasharray="3 6" opacity="0.35" />
+                stroke={UP} strokeWidth="0.7" strokeDasharray="3 6" opacity="0.35" />
           <line x1={pad.l} x2={W - pad.r} y1={y(lo)} y2={y(lo)}
-                stroke="var(--down)" strokeWidth="0.7" strokeDasharray="3 6" opacity="0.35" />
+                stroke={DOWN} strokeWidth="0.7" strokeDasharray="3 6" opacity="0.35" />
 
           {mode === "line" ? (
             <>
@@ -481,7 +499,7 @@ export default function LineChart({
             <g>
               {visible.map((p, i) => {
                 const rising = p.close >= p.open;
-                const c = rising ? "var(--up)" : "var(--down)";
+                const c = rising ? UP : DOWN;
                 const xc = x(i);
                 const top = y(Math.max(p.open, p.close));
                 const bottom = y(Math.min(p.open, p.close));
@@ -511,10 +529,10 @@ export default function LineChart({
 
           {/* extreme markers (always visible, including on downsampled series) */}
           {hiIdx >= 0 && hiIdx !== visible.length - 1 && (
-            <circle cx={x(hiIdx)} cy={y(hi)} r="2.4" fill="var(--up)" opacity="0.7" />
+            <circle cx={x(hiIdx)} cy={y(hi)} r="2.4" fill={UP} opacity="0.7" />
           )}
           {loIdx >= 0 && loIdx !== visible.length - 1 && (
-            <circle cx={x(loIdx)} cy={y(lo)} r="2.4" fill="var(--down)" opacity="0.7" />
+            <circle cx={x(loIdx)} cy={y(lo)} r="2.4" fill={DOWN} opacity="0.7" />
           )}
 
           {/* crosshair */}

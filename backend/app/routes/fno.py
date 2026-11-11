@@ -655,6 +655,8 @@ def _underlying_spot(db: Session, underlying: str) -> float | None:
         return _index_spot(db, FNO_INDICES[u])
     row = (db.query(Instrument).filter_by(kind="EQUITY", symbol=u).one_or_none())
     if row:
+        from app.services import instrument_engine as IE
+        IE.ensure_instrument_ready(db, row)
         m = row.meta or {}
         v = m.get("lastPrice")
         if v is None and row.history:

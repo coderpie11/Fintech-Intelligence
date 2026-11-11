@@ -27,9 +27,28 @@ from sqlalchemy.orm import Session
 
 from app.data.adapters import yfinance_adapter as Y
 from app.models.models import Instrument
+from app.services.spark import extend_spark, with_spark
 
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 QUOTE_SOURCE = "Yahoo Finance 5-minute candles (delayed)"
+
+# A list card reuses a quote this recently instead of hitting the provider.
+# Wide pages reconcile hundreds of symbols; a small TTL turns repeat views and
+# multi-page browsing into zero network calls without ever serving a stale
+# intraday print during a live session.
+LIST_QUOTE_TTL = 90
+
+
+def now_ist() -> dt.datetime:
+    return dt.datetime.now(IST)
+
+
+def market_open(now: dt.datetime | None = None) -> bool:
+    """NSE/BSE regular session (Mon-Fri 09:15-15:30 IST)."""
+    now = (now or now_ist()).astimezone(IST)
+    if now.weekday() >= 5:
+        return False
+    return (9, 15) <= (now.hour, now.minute) <= (15, 30)
 
 
 def _today_ist() -> dt.date:
@@ -169,10 +188,37 @@ def sync_daily_history(row: Instrument) -> bool:
     if not fresh:
         return False
     current = row.history or []
-    if not current or str(fresh[-1].get("date")) >= str(current[-1].get("date")):
+    fresh = [b for b in (fresh or []) if b.get("c") is not None]
+    if not fresh:
+        return False
+    if not current:
         row.history = fresh
         meta["history_synced_date"] = today
+        meta["history_points"] = len(fresh)
+        row.meta = with_spark(meta, fresh)
+        return True
+
+    # A provider can answer with a one-point stub for an index it does not
+    # really carry (NIFTY MIDCAP 100, NIFTY SMALLCAP 100). Replacing a real
+    # five-year series with that stub wiped every ladder cell, so a short
+    # answer may only *extend* the stored series, never shrink it.
+    if len(fresh) + 5 < len(current):
+        if str(fresh[-1].get("date")) > str(current[-1].get("date")):
+            merged = (list(current) + [fresh[-1]])[-1300:]
+            row.history = merged
+            meta["history_synced_date"] = today
+            meta["history_points"] = len(merged)
+            row.meta = with_spark(meta, merged)
+            return True
+        meta["history_synced_date"] = today
         row.meta = meta
+        return False
+
+    if str(fresh[-1].get("date")) >= str(current[-1].get("date")):
+        row.history = fresh
+        meta["history_synced_date"] = today
+        meta["history_points"] = len(fresh)
+        row.meta = with_spark(meta, fresh)
         return True
     return False
 
@@ -184,8 +230,14 @@ def _finite(value):
     return value
 
 
-def reconcile_row(row: Instrument, quote: dict | None) -> bool:
-    """Write a quote into the ORM object. Returns True when anything changed."""
+def reconcile_row(row: Instrument, quote: dict | None,
+                  touch_history: bool = True) -> bool:
+    """Write a quote into the ORM object. Returns True when anything changed.
+
+    ``touch_history=False`` is used by wide list pages: the quote and the
+    sparkline are updated, but the multi-year daily column is left for the
+    detail/chart request that actually needs it.
+    """
     if not quote:
         return False
     last = _finite(quote.get("lastPrice"))
@@ -211,8 +263,13 @@ def reconcile_row(row: Instrument, quote: dict | None) -> bool:
     meta["fetched_at"] = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
     if not is_index:
         meta["asof"] = quote.get("session")
-    row.meta = meta
-    row.history = _apply_history(row, quote)
+    if touch_history:
+        hist = _apply_history(row, quote)
+        row.history = hist
+        row.meta = with_spark(meta, hist)
+    else:
+        meta["spark"] = extend_spark(meta, last)
+        row.meta = meta
     after = (meta.get(price_key), meta.get("changepct"), meta.get("live_asof"))
     return before != after
 
@@ -232,22 +289,62 @@ def commit_with_retry(db: Session, attempts: int = 3, delay: float = 0.25) -> bo
 
 
 def live_quotes_enabled() -> bool:
-    """Network quote refreshes are opt-in on hosted platforms.
+    """Live provider quotes are on by default, including on Render.
 
-    The pre-seeded snapshot already carries every price the UI needs. Calling
-    into yfinance/curl_cffi from a request thread is what SIGSEGV'd the Render
-    container (no cp314 wheels for the pinned C extensions), so unless a host
-    explicitly sets ENABLE_LIVE_QUOTES=1 we stay on the snapshot. Local dev
-    keeps the old behaviour because RENDER is not set there.
+    Python is pinned to 3.11.9 so the cp314 C-extension segfault cannot occur,
+    and the adapter downloads one 25-ticker batch at a time to keep the
+    512 MB instance inside its memory budget. A host can still opt out with
+    ENABLE_LIVE_QUOTES=0, but nothing disables quotes implicitly.
     """
     flag = os.getenv("ENABLE_LIVE_QUOTES")
     if flag is None:
-        return not os.getenv("RENDER")
+        return True
     return flag.strip().lower() not in ("", "0", "false", "no")
 
 
+def quote_is_current(row: Instrument, ttl: float = LIST_QUOTE_TTL,
+                     closed_ok: bool = True) -> bool:
+    """True when a list card can paint without a provider round-trip.
+
+    Two rules, both universal:
+
+    * a quote written within the list TTL is still the same session print;
+    * outside 09:15-15:30 IST the stored quote *is* the final session print,
+      so the provider adds nothing but latency.
+    """
+    meta = row.meta or {}
+    if meta.get("lastPrice") is None and meta.get("last") is None:
+        return False
+    stamp = meta.get("fetched_at")
+    if stamp:
+        try:
+            when = dt.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        except ValueError:
+            when = None
+        if when is not None:
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=dt.timezone.utc)
+            age = (dt.datetime.now(dt.timezone.utc) - when).total_seconds()
+            if age <= ttl:
+                return True
+    return bool(closed_ok and not market_open())
+
+
+def list_rows(db: Session, rows: Iterable[Instrument], *, ttl: float = LIST_QUOTE_TTL,
+              cap: int | None = None, touch_history: bool = False) -> dict[str, dict]:
+    """Refresh only the list cards that genuinely need a provider call."""
+    rows = list(rows)
+    stale = [r for r in rows if not quote_is_current(r, ttl)]
+    if not stale:
+        return {}
+    if cap is not None and len(stale) > cap:
+        stale = stale[:cap]
+    return refresh_rows(db, stale, touch_history=touch_history)
+
+
 def refresh_rows(db: Session, rows: Iterable[Instrument], commit: bool = True,
-                 sync_history: bool = False) -> dict[str, dict]:
+                 sync_history: bool = False,
+                 touch_history: bool = True) -> dict[str, dict]:
     """Reconcile a set of rows against one batch live download."""
     if not live_quotes_enabled():
         return {}
@@ -272,7 +369,8 @@ def refresh_rows(db: Session, rows: Iterable[Instrument], commit: bool = True,
         quote = quote_from_sessions(frames.get(ticker))
         if quote:
             quotes[row.symbol] = quote
-            changed = reconcile_row(row, quote) or changed
+            changed = reconcile_row(row, quote,
+                                    touch_history=touch_history) or changed
     if commit and changed:
         commit_with_retry(db)
     return quotes

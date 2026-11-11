@@ -7,10 +7,12 @@ import { bigCrude, inr, pct } from "@/lib/format";
 import { ErrorBox, PageHeader, RefreshButton, Skeleton } from "@/components/PageKit";
 import { EnvVal, PctVal } from "@/components/EnvVal";
 import MetricTip from "@/components/MetricTip";
+import Sparkline from "@/components/Sparkline";
 
 type Stock = {
   symbol: string; name: string; slug: string; sector?: string;
   last: Env; changepct: Env; pe: Env; pb: Env; market_cap: Env; href: string;
+  spark?: number[];
 };
 
 const SORTS = [
@@ -136,6 +138,7 @@ export default function StocksPage() {
                         ))}
                       </div>
                     ) : null}
+                    <Sparkline points={s.spark} width={110} height={26} className="mt-1" />
                   </div>
                   <div className="text-right knum font-semibold">{inr(s.last?.value)}</div>
                   <div className="text-right"><PctVal env={s.changepct} /></div>

@@ -15,6 +15,7 @@ from app.data.adapters import yfinance_adapter as Y
 from app.models.models import CorporateEvent, Instrument
 from app.seed.universe import INDICES
 from app.services import calc, live_quote as LQ
+from app.services import instrument_engine as IE
 from app.services.contextual import reported, source_issue
 
 router = APIRouter(prefix="/indices", tags=["indices"])
@@ -159,7 +160,8 @@ def list_indices(expand: bool = Query(False), db: Session = Depends(get_db)):
             continue
         if slug in by_slug:
             shown.append(by_slug[slug])
-    LQ.refresh_rows(db, shown)
+    IE.ensure_many(db, shown)
+    LQ.list_rows(db, shown)
     out = []
     for spec in INDICES:
         slug = spec["slug"]
@@ -188,7 +190,7 @@ def list_indices(expand: bool = Query(False), db: Session = Depends(get_db)):
             "constituents_count": len(m.get("constituents") or []),
             "fno_available": bool(_fno_symbol(spec)),
             "fno_symbol": _fno_symbol(spec),
-            "spark": [h.get("c") for h in hist[-40:] if h.get("c") is not None],
+            "spark": IE.sparkline(r),
             "live_source": m.get("live_source"),
             "asof": m.get("live_asof"),
             "fetched_at": m.get("fetched_at"),
@@ -558,6 +560,7 @@ def index_detail(slug: str, db: Session = Depends(get_db)):
     row = (db.query(Instrument).filter_by(kind="INDEX", symbol=spec["nse"]).one_or_none())
     if not row:
         raise HTTPException(404, "Index not seeded yet")
+    IE.ensure_instrument_ready(db, row)
     LQ.refresh_one(db, row, sync_history=True)
     m = row.meta or {}
     history = row.history or []
@@ -672,19 +675,21 @@ def index_detail(slug: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{slug}/intraday")
-def index_intraday(slug: str, interval: str = "5m", db: Session = Depends(get_db)):
+def index_intraday(slug: str, interval: str = "2m", db: Session = Depends(get_db)):
     spec = spec_for_slug(slug)
     if not spec:
         raise HTTPException(404, "Unknown index slug")
     row = (db.query(Instrument).filter_by(kind="INDEX", symbol=spec["nse"]).one_or_none())
     if not row:
         raise HTTPException(404, "Index not seeded yet")
+    IE.ensure_instrument_ready(db, row)
     quote = LQ.refresh_one(db, row)
     ticker = spec.get("yahoo")
     if ticker:
         try:
             data = Y.intraday(ticker, interval=interval, period="5d")
             if data["points"]:
+                data["points"] = IE.stitch_live_point(data["points"], row.meta)
                 last = data["points"][-1]
                 data["last"] = last["c"]
                 if quote:
@@ -707,12 +712,13 @@ def index_intraday(slug: str, interval: str = "5m", db: Session = Depends(get_db
         points = [{"datetime": h["date"], "date": h["date"], "time": "15:30",
                    "o": h.get("o"), "h": h.get("h"), "l": h.get("l"),
                    "c": h["c"], "v": h.get("v")} for h in tail]
+        points = IE.stitch_live_point(points, row.meta)
         change = round(hist[-1]["c"] - hist[-2]["c"], 2)
         return {
             "ticker": ticker, "interval": "1d", "session": hist[-1]["date"],
             "source": "Yahoo Finance daily candles (intraday feed unavailable)",
             "points": points,
-            "last": hist[-1]["c"],
+            "last": points[-1]["c"],
             "prevClose": hist[-2]["c"],
             "change": change,
             "changepct": round((hist[-1]["c"] / hist[-2]["c"] - 1) * 100, 2),

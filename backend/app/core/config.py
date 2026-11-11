@@ -93,6 +93,13 @@ CORS_ORIGINS += [
     if origin.strip()
 ]
 
+# Pages preview deployments get a random subdomain, so allow the project's
+# whole pages.dev namespace without opening CORS to every website.
+CORS_ORIGIN_REGEX = os.getenv(
+    "CORS_ORIGIN_REGEX",
+    r"https://([a-z0-9-]+\.)?fintech-intelligence\.pages\.dev",
+)
+
 # ---------------------------------------------------------------------------
 # Third-party credentials (never log these; read through these accessors).
 # ---------------------------------------------------------------------------

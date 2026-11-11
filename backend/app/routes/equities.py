@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.core.db import get_db
 from app.data.adapters import screener_adapter as S
@@ -16,6 +16,7 @@ from app.data.adapters import stockanalysis_adapter as SA
 from app.data.adapters import yfinance_adapter as Y
 from app.models.models import Instrument
 from app.services import calc, fundamentals as F, live_quote as LQ
+from app.services import instrument_engine as IE
 from app.services.contextual import (not_applicable, not_disclosed, reported,
                                      source_issue)
 
@@ -81,14 +82,25 @@ def _snap(r: Instrument) -> dict:
     m = r.meta or {}
     x = _extra(r)
     fund = m.get("fundamentals") or {}
-    hist = r.history or []
     sector = m.get("sector") or r.sector
-    last_bar = hist[-1] if hist else {}
-    prev_bar = hist[-2] if len(hist) > 1 else {}
-    open_v = m.get("open") or last_bar.get("o")
-    prev_v = m.get("prevClose") or prev_bar.get("c")
-    high_v = m.get("high") or last_bar.get("h")
-    low_v = m.get("low") or last_bar.get("l")
+    # The list is read by every equities page; the five-year history column is
+    # deliberately not deserialised unless a metric is genuinely missing.
+    open_v = m.get("open")
+    prev_v = m.get("prevClose")
+    high_v = m.get("high")
+    low_v = m.get("low")
+    if None in (open_v, prev_v, high_v, low_v):
+        tail = (r.history or [])[-2:]
+        last_bar = tail[-1] if tail else {}
+        prev_bar = tail[-2] if len(tail) > 1 else {}
+        if open_v is None:
+            open_v = last_bar.get("o")
+        if prev_v is None:
+            prev_v = prev_bar.get("c")
+        if high_v is None:
+            high_v = last_bar.get("h")
+        if low_v is None:
+            low_v = last_bar.get("l")
     pe = m.get("pe") or x.get("trailingPE") or (fund.get("valuation") or {}).get("pe")
     pb = x.get("priceToBook") or (fund.get("valuation") or {}).get("pb")
     bv = x.get("bookValue") or (fund.get("valuation") or {}).get("book_value_per_share")
@@ -116,6 +128,7 @@ def _snap(r: Instrument) -> dict:
         "live_asof": m.get("live_asof"),
         "live_time": m.get("live_time"),
         "live_source": m.get("live_source"),
+        "spark": IE.sparkline(r),
         "open": _env(open_v, "day open"),
         "prev_close": _env(prev_v, "previous close"),
         "day_range": _env([low_v, high_v], "day range"),
@@ -238,7 +251,9 @@ def list_stocks(q: str | None = None, sector: str | None = None,
                 index: str | None = None,
                 sort: str = "mcap", limit: int = Query(50, le=250),
                 db: Session = Depends(get_db)):
-    query = db.query(Instrument).filter(Instrument.kind == "EQUITY")
+    query = (db.query(Instrument)
+               .options(defer(Instrument.history))
+               .filter(Instrument.kind == "EQUITY"))
     q_mode = bool(q and q.strip())
     if q_mode:
         from app.services import fuzzy
@@ -259,6 +274,8 @@ def list_stocks(q: str | None = None, sector: str | None = None,
         rows = query.all()
     if sector:
         rows = [r for r in rows if (r.sector or "") == sector]
+    # Fill quote + 52-week metrics that a provider omitted, from stored bars.
+    IE.ensure_many(db, rows)
     items = [_snap(r) for r in rows]
     if not q_mode:
         # Discovery rows without a price stay out of the browse table, but a
@@ -285,7 +302,10 @@ def list_stocks(q: str | None = None, sector: str | None = None,
     page = items[:limit]
     by_symbol = {r.symbol: r for r in rows}
     page_rows = [by_symbol[i["symbol"]] for i in page if i["symbol"] in by_symbol]
-    LQ.refresh_rows(db, page_rows)
+    # Only cards that actually need a provider call are reconciled: a closed
+    # market already stores the final session print, and an open market caps
+    # the page batch so a 250-row table still paints in seconds.
+    LQ.list_rows(db, page_rows, cap=90, touch_history=False)
     refreshed = {r.symbol: _snap(r) for r in page_rows}
     page = [refreshed.get(i["symbol"], i) for i in page]
     return {"count": len(items), "stocks": page, "sectors": sectors,
@@ -373,16 +393,18 @@ def peers_for(symbol: str, db: Session = Depends(get_db)):
 
 # ---------------------------------------------------------------- intraday
 @router.get("/{symbol}/intraday")
-def stock_intraday(symbol: str, interval: str = "5m",
+def stock_intraday(symbol: str, interval: str = "2m",
                    db: Session = Depends(get_db)):
     row = _find_equity(db, symbol)
     if not row:
         raise HTTPException(404, f"{symbol} not in the seeded universe yet")
+    IE.ensure_instrument_ready(db, row)
     quote = LQ.refresh_one(db, row)
     ticker = f"{row.symbol}.NS"
     try:
         data = Y.intraday(ticker, interval=interval, period="5d")
         if data["points"]:
+            data["points"] = IE.stitch_live_point(data["points"], row.meta)
             last = data["points"][-1]
             data["last"] = last["c"]
             if quote:
@@ -403,13 +425,15 @@ def stock_intraday(symbol: str, interval: str = "5m",
     if len(hist) >= 2:
         last_bar, prev_bar = hist[-1], hist[-2]
         change = round(last_bar["c"] - prev_bar["c"], 2)
+        points = [{"datetime": h["date"], "date": h["date"], "time": "15:30",
+                   "o": h.get("o"), "h": h.get("h"), "l": h.get("l"),
+                   "c": h["c"], "v": h.get("v")} for h in hist[-60:]]
+        points = IE.stitch_live_point(points, row.meta)
         return {
             "ticker": ticker, "interval": "1d", "session": last_bar["date"],
             "source": "Yahoo Finance daily candles (intraday feed unavailable)",
-            "points": [{"datetime": h["date"], "date": h["date"], "time": "15:30",
-                        "o": h.get("o"), "h": h.get("h"), "l": h.get("l"),
-                        "c": h["c"], "v": h.get("v")} for h in hist[-60:]],
-            "last": last_bar["c"],
+            "points": points,
+            "last": points[-1]["c"],
             "prevClose": prev_bar["c"],
             "change": change,
             "changepct": round((last_bar["c"] / prev_bar["c"] - 1) * 100, 2),
@@ -426,6 +450,7 @@ def stock_detail(symbol: str, refresh: bool = False, db: Session = Depends(get_d
     row = _find_equity(db, symbol)
     if not row:
         raise HTTPException(404, f"{symbol} not in the seeded universe yet")
+    IE.ensure_instrument_ready(db, row)
     quote = LQ.refresh_one(db, row, sync_history=True)
     meta = _ensure_research(db, row, force=refresh)
     snap = _snap(row)
@@ -597,7 +622,7 @@ def stock_detail(symbol: str, refresh: bool = False, db: Session = Depends(get_d
     # first paint; the stored peer prices are good enough for the table and are
     # refreshed by the screener/list views anyway.
     if refresh:
-        LQ.refresh_rows(db, srows[:30])
+        LQ.list_rows(db, srows[:30], cap=30)
     peers = _peer_set(db, srows, row.symbol)
 
     # ---- DCF defaults (₹ million) ----

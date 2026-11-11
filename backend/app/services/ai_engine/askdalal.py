@@ -433,47 +433,9 @@ def resolve_company(db: Session, question: str,
                  .one_or_none())
         if row:
             return row
-    text = (question or "").strip()
-    if not text:
-        return None
+    from app.services.ai_engine import entity
 
-    # Exact ticker tokens first ("TCS", "RELIANCE", "PARAS").
-    for token in re.findall(r"\b[A-Za-z][A-Za-z0-9&.-]{1,19}\b", text):
-        if token.lower() in _STOP_WORDS:
-            continue
-        row = (db.query(Instrument)
-                 .filter_by(kind="EQUITY", symbol=token.upper())
-                 .one_or_none())
-        if row:
-            return row
-
-    candidates = db.query(Instrument).filter(Instrument.kind == "EQUITY").all()
-
-    def pick(term: str, floor: float) -> Instrument | None:
-        ranked = fuzzy.rank(term, candidates,
-                            lambda r: f"{r.symbol} {r.name}",
-                            limit=1, floor=floor)
-        return ranked[0] if ranked else None
-
-    # Capitalised phrases such as "Paras Defence" or "Reliance Industries".
-    for phrase in re.findall(
-            r"\b(?:[A-Z][A-Za-z&.-]+(?:\s+[A-Z][A-Za-z&.-]+){0,3})\b", text):
-        if phrase.lower() in _STOP_WORDS or len(phrase) < 3:
-            continue
-        found = pick(phrase, 0.72)
-        if found:
-            return found
-
-    found = pick(text, 0.78)
-    if found:
-        return found
-    for token in sorted(fuzzy.tokens(text), key=len, reverse=True)[:5]:
-        if len(token) < 5 or token in _STOP_WORDS:
-            continue
-        found = pick(token, 0.82)
-        if found:
-            return found
-    return None
+    return entity.resolve(db, question or "", kinds=("EQUITY",))
 
 
 def _latest_series(series: dict, name: str) -> float | None:

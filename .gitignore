@@ -24,14 +24,15 @@ next-env.d.ts
 tsconfig.tsbuildinfo
 *.log
 
-# cloudflare
-.vercel/
-.wrangler/
-
 # env / secrets
 .env
 .env.*
 !.env.example
+
+# databases (local store lives in backend/data/)
+*.db
+*.sqlite
+*.sqlite3
 
 # OS
 Thumbs.db

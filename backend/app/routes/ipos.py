@@ -57,8 +57,17 @@ def _registrar_link(name: str | None, fallback: str | None = None) -> str | None
 
 
 # --------------------------------------------------------------- live merge
+_SYNC_STATE: dict = {"at": 0.0, "result": None}
+SYNC_TTL = 600.0
+
+
 def _sync_live(db: Session) -> dict:
     """Upsert the live InvestorGain rows into SQLite (cached 10 minutes)."""
+    import time as _t
+
+    if (_SYNC_STATE["result"] is not None
+            and _t.time() - float(_SYNC_STATE["at"]) < SYNC_TTL):
+        return _SYNC_STATE["result"]
     try:
         # force=False honours the adapter's 10-minute cache so a burst of page
         # views does not re-scrape InvestorGain on every request. The explicit
@@ -123,8 +132,11 @@ def _sync_live(db: Session) -> dict:
             row.meta = merged
             updated += 1
     db.commit()
-    return {"ok": True, "count": len(rows), "added": added,
-            "updated": updated, "fetched_at": payload.get("fetched_at")}
+    result = {"ok": True, "count": len(rows), "added": added,
+              "updated": updated, "fetched_at": payload.get("fetched_at")}
+    _SYNC_STATE["at"] = _t.time()
+    _SYNC_STATE["result"] = result
+    return result
 
 
 def _live_meta(i: Ipo) -> dict:
@@ -138,6 +150,8 @@ def _price(i: Ipo, db: Session) -> dict:
         row = (db.query(Instrument)
                  .filter_by(kind="EQUITY", symbol=i.symbol.upper()).one_or_none())
         if row:
+            from app.services import instrument_engine as IE
+            IE.ensure_instrument_ready(db, row)
             rm = row.meta or {}
             if rm.get("lastPrice") is not None:
                 return {"last": _env(rm.get("lastPrice"), "post-listing price"),

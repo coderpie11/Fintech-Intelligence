@@ -9,16 +9,24 @@ Nothing is invented; missing inputs are reported as unavailable.
 """
 from __future__ import annotations
 
+import datetime as dt
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.models.models import FundMeta, FundScheme, Instrument
+from app.services import calc
+from app.services import instrument_engine as IE
 
 router = APIRouter(prefix="/portfolio-xray", tags=["portfolio x-ray"])
 
 MF_KINDS = {"MF", "MUTUAL_FUND", "FUND"}
+
+# Every cashflow is expressed as years since this fixed epoch, so a holding's
+# flows and the portfolio XIRR share one time axis without recomputing.
+_EPOCH = dt.date(2000, 1, 1)
 
 
 class Holding(BaseModel):
@@ -26,9 +34,14 @@ class Holding(BaseModel):
     symbol: str | None = None     # equity / ETF symbol
     code: str | None = None       # fund scheme code
     name: str | None = None
+    mode: str = "LUMPSUM"         # LUMPSUM / SIP
     quantity: float | None = None
-    price: float | None = None    # average buy price
-    value: float | None = None    # optional explicit current value
+    price: float | None = None    # average buy price (lumpsum)
+    value: float | None = None    # invested amount, or explicit current value
+    buy_date: str | None = None   # lumpsum purchase date (YYYY-MM-DD)
+    sip_amount: float | None = None   # monthly SIP instalment in rupees
+    sip_start: str | None = None      # first instalment date (YYYY-MM-DD)
+    sip_months: int | None = None     # tenure in months
 
 
 class XrayBody(BaseModel):
@@ -49,22 +62,76 @@ def _fund_meta(db: Session, code: str) -> dict:
     return (rec.meta or {}) if rec else {}
 
 
+def _as_date(value) -> dt.date | None:
+    if not value:
+        return None
+    try:
+        return dt.date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _year_frac(day: dt.date) -> float:
+    return (day - _EPOCH).days / 365.0
+
+
+def _clean_series(rows: list[dict], key: str) -> list[dict]:
+    """Ascending (date, price) pairs with non-finite values removed."""
+    out = []
+    for r in rows or []:
+        day = str(r.get("date") or "")[:10]
+        px = _num(r.get(key))
+        if day and px is not None and px > 0:
+            out.append({"date": day, "price": px})
+    out.sort(key=lambda r: r["date"])
+    return out
+
+
+def _price_on(series: list[dict], day: dt.date) -> float | None:
+    """Last traded/declared price on or before `day` (nearest prior session)."""
+    if not series:
+        return None
+    iso = day.isoformat()
+    picked = None
+    for r in series:
+        if r["date"] <= iso:
+            picked = r["price"]
+        else:
+            break
+    if picked is not None:
+        return picked
+    return series[0]["price"]
+
+
+def _add_months(day: dt.date, months: int) -> dt.date:
+    month = day.month - 1 + months
+    year = day.year + month // 12
+    month = month % 12 + 1
+    day_of_month = min(day.day, 28)
+    return dt.date(year, month, day_of_month)
+
+
 def _resolve(db: Session, h: Holding) -> dict | None:
+    """Resolve a holding to its *current* price plus a dated price series.
+
+    The user-supplied price is a buy price, never the mark: `current_price`
+    always comes from the repaired instrument/NAV record.
+    """
     kind = (h.kind or "EQUITY").upper()
     if kind in MF_KINDS:
         code = (h.code or "").strip()
         rec = db.get(FundScheme, code) if code else None
         if not rec:
             return None
+        IE.ensure_fund_ready(db, rec)
         meta = _fund_meta(db, code)
         g = meta.get("groww") or {}
         navs = rec.navs or []
-        nav = _num(navs[-1]["nav"]) if navs else None
-        price = _num(h.price) or nav
+        current = _num(navs[-1]["nav"]) if navs else None
         return {
             "kind": "MF", "key": code, "name": rec.name,
             "amc": g.get("amc") or rec.amc, "sector": g.get("sub_category") or rec.category,
-            "price": price, "quantity": _num(h.quantity), "value": _num(h.value),
+            "current_price": current, "series": _clean_series(navs, "nav"),
             "ter_pct": _num(g.get("ter")) or 0.0,
             "holdings": g.get("holdings") or [],
             "holdings_date": g.get("portfolio_date"),
@@ -79,26 +146,124 @@ def _resolve(db: Session, h: Holding) -> dict | None:
                  .first())
     if not row:
         return None
+    IE.ensure_instrument_ready(db, row)
     m = row.meta or {}
-    px = _num(m.get("lastPrice"))
-    if px is None and row.history:
-        px = _num(row.history[-1].get("c"))
+    current = _num(m.get("lastPrice")) or _num(m.get("last"))
+    series = _clean_series(row.history or [], "c")
+    if current is None and series:
+        current = series[-1]["price"]
     return {
         "kind": "ETF" if row.kind == "ETF" else "EQUITY", "key": row.symbol,
         "name": row.name, "amc": None, "sector": row.sector or "Unclassified",
-        "price": _num(h.price) or px, "quantity": _num(h.quantity),
-        "value": _num(h.value), "ter_pct": _num(m.get("ter_pct")) or 0.0,
+        "current_price": current, "series": series,
+        "ter_pct": _num(m.get("ter_pct")) or 0.0,
         "holdings": [], "holdings_date": None,
         "href": f"/etfs/{row.symbol}" if row.kind == "ETF" else f"/stocks/{row.symbol}",
     }
 
 
-def _current_value(r: dict) -> float:
-    if r["value"] is not None:
-        return float(r["value"])
-    if r["quantity"] is not None and r["price"] is not None:
-        return float(r["quantity"]) * float(r["price"])
-    return 0.0
+def _position(r: dict, h: Holding, today: dt.date) -> dict:
+    """Cost basis, accumulated units, market value and money-weighted return.
+
+    Two modes, both universal across equities, ETFs, funds, trusts and gold:
+
+    * ``LUMPSUM`` — quantity x buy price, or an invested amount dated by
+      ``buy_date`` (units = amount / price on that date).
+    * ``SIP`` — one instalment per calendar month from ``sip_start`` for
+      ``sip_months`` months, each buying units at the nearest prior price.
+    """
+    current = r.get("current_price")
+    series = r.get("series") or []
+    mode = (h.mode or "LUMPSUM").strip().upper()
+    if mode not in ("SIP", "LUMPSUM"):
+        mode = "LUMPSUM"
+
+    units: float | None = None
+    invested: float | None = None
+    flows: list[tuple[float, float]] = []
+    months_done = 0
+    start_date = None
+
+    if mode == "SIP":
+        monthly = _num(h.sip_amount)
+        start = _as_date(h.sip_start)
+        tenure = int(h.sip_months or 0)
+        sip_units = 0.0
+        done = 0
+        if monthly and monthly > 0 and start and tenure > 0:
+            for i in range(tenure):
+                when = _add_months(start, i)
+                if when > today:
+                    break
+                px = _price_on(series, when)
+                if px is None:
+                    continue
+                done += 1
+                sip_units += monthly / px
+                flows.append((_year_frac(when), -monthly))
+        months_done = done
+        start_date = start
+        if done:
+            units = sip_units
+            invested = monthly * done
+
+    if units is None:
+        qty = _num(h.quantity)
+        buy = _num(h.price)
+        amount = _num(h.value)
+        buy_day = _as_date(h.buy_date)
+        if qty is not None and qty > 0:
+            units = qty
+            if buy is not None and buy > 0:
+                invested = qty * buy
+        elif amount is not None and amount > 0:
+            invested = amount
+            if buy_day is not None and series:
+                px0 = _price_on(series, buy_day)
+                if px0:
+                    units = amount / px0
+        if invested is not None and buy_day is not None:
+            flows.append((_year_frac(buy_day), -invested))
+            start_date = buy_day
+
+    # An explicit value field is only an override when no units are known;
+    # otherwise marking to the live price is the whole point of the X-ray.
+    value_rs: float | None = None
+    if units is not None and current is not None:
+        value_rs = units * current
+    elif _num(h.value) is not None and _num(h.quantity) is None:
+        value_rs = _num(h.value)
+        if invested is None:
+            invested = value_rs
+    if value_rs is None:
+        value_rs = 0.0
+    if invested is None:
+        invested = value_rs
+
+    xirr_pct = None
+    if flows and current is not None and units is not None and value_rs > 0:
+        xirr_pct = calc.xirr(flows + [(_year_frac(today), value_rs)])
+
+    cagr_pct = None
+    if start_date is not None and invested and invested > 0:
+        years = max((today - start_date).days / 365.0, 1 / 365)
+        cagr_pct = calc.cagr(invested, value_rs, years)
+
+    return {
+        "mode": mode,
+        "units": round(units, 4) if units is not None else None,
+        "invested_rs": round(invested, 2),
+        "value_rs": round(value_rs, 2),
+        "pnl_rs": round(value_rs - invested, 2),
+        "pnl_pct": round((value_rs / invested - 1) * 100, 2) if invested else None,
+        "xirr_pct": xirr_pct,
+        "cagr_pct": round(cagr_pct, 2) if cagr_pct is not None else None,
+        "months": months_done if mode == "SIP" else None,
+        "sip_amount": _num(h.sip_amount) if mode == "SIP" else None,
+        "buy_date": start_date.isoformat() if start_date else None,
+        "flows": flows,
+    }
+
 
 
 def _norm(name: str) -> str:
@@ -231,18 +396,18 @@ def lookup(q: str = Query(..., min_length=1), limit: int = Query(8, le=20),
 
 @router.post("/analyze")
 def analyze(body: XrayBody, db: Session = Depends(get_db)):
+    today = dt.date.today()
     resolved = []
     unresolved = []
+    all_flows: list[tuple[float, float]] = []
     for h in body.holdings:
         r = _resolve(db, h)
         if not r:
             unresolved.append(h.symbol or h.code or h.name or "unknown")
             continue
-        r["value_rs"] = _current_value(r)
-        if r["quantity"] is not None and r["price"] is not None:
-            r["invested_rs"] = float(r["quantity"]) * float(r["price"])
-        else:
-            r["invested_rs"] = r["value_rs"]
+        pos = _position(r, h, today)
+        all_flows.extend(pos.pop("flows"))
+        r.update(pos)
         resolved.append(r)
 
     total = sum(r["value_rs"] for r in resolved)
@@ -287,17 +452,29 @@ def analyze(body: XrayBody, db: Session = Depends(get_db)):
     }
     feeg = _fee_drag(db, mf_rows, body.gross_return_pct)
 
+    portfolio_xirr = None
+    if all_flows and total > 0:
+        portfolio_xirr = calc.xirr(all_flows + [(_year_frac(today), total)])
+
     return {
         "summary": {
             "holdings": len(resolved), "unresolved": unresolved,
             "invested_rs": round(invested, 2), "value_rs": round(total, 2),
             "pnl_rs": round(total - invested, 2),
             "pnl_pct": round((total / invested - 1) * 100, 2) if invested else None,
+            "xirr_pct": portfolio_xirr,
         },
         "holdings": [{
             "kind": r["kind"], "key": r["key"], "name": r["name"],
-            "sector": r["sector"], "quantity": r["quantity"], "price": r["price"],
+            "sector": r["sector"], "mode": r.get("mode"),
+            "quantity": r.get("units"), "units": r.get("units"),
+            "price": r.get("current_price"), "current_price": r.get("current_price"),
             "value_rs": round(r["value_rs"], 2),
+            "invested_rs": round(r["invested_rs"], 2),
+            "pnl_rs": r.get("pnl_rs"), "pnl_pct": r.get("pnl_pct"),
+            "xirr_pct": r.get("xirr_pct"), "cagr_pct": r.get("cagr_pct"),
+            "months": r.get("months"), "sip_amount": r.get("sip_amount"),
+            "buy_date": r.get("buy_date"),
             "weight_pct": round(r["value_rs"] / total * 100, 2) if total else 0.0,
             "ter_pct": r.get("ter_pct"), "href": r.get("href"),
         } for r in resolved],
@@ -306,8 +483,14 @@ def analyze(body: XrayBody, db: Session = Depends(get_db)):
         "overlap": overlap,
         "fee_drag": feeg,
         "notes": [
-            "Holdings are parsed from your manual input; prices and sectors come "
-            "from the local instrument store and NAVs from AMFI.",
+            "Holdings are parsed from your manual input; current prices and "
+            "sectors come from the repaired local instrument store (live "
+            "self-healing on demand) and NAVs from AMFI.",
+            "A holding is never marked at its buy price: quantity/mode buy "
+            "units and the current value uses the real market price or NAV.",
+            "SIP units are bought at the nearest declared price on each "
+            "monthly instalment date; XIRR is the money-weighted annual "
+            "return of those cashflows.",
             "Fund look-through, overlap and fee drag use each scheme's disclosed "
             "monthly portfolio and expense ratio. Missing data is reported, not guessed.",
         ],

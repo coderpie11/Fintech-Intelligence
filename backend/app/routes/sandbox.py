@@ -27,6 +27,7 @@ from app.data.adapters import nse_adapter as N
 from app.models.models import Instrument, SandboxOrder, WatchItem
 from app.routes.indices import slug_for
 from app.services import calc
+from app.services import instrument_engine as IE
 from app.services.contextual import reported
 
 router = APIRouter(tags=["sandbox"])
@@ -130,21 +131,22 @@ def _resolve_instrument(term: str, db: Session,
         row = (db.query(Instrument).filter_by(kind="INDEX", symbol=alias)
                  .one_or_none())
         if row:
-            return row
+            return IE.ensure_instrument_ready(db, row)
     row = (db.query(Instrument)
              .filter(Instrument.kind.in_(kinds), Instrument.symbol == u)
              .first())
     if row:
-        return row
+        return IE.ensure_instrument_ready(db, row)
     # Exact-ish symbol prefix, then company-name contains (Paras Defence, etc.)
     row = (db.query(Instrument)
              .filter(Instrument.kind.in_(kinds), Instrument.symbol.like(f"{u}%"))
              .order_by(Instrument.symbol).first())
     if row:
-        return row
-    return (db.query(Instrument)
-              .filter(Instrument.kind.in_(kinds), Instrument.name.ilike(f"%{raw}%"))
-              .order_by(Instrument.symbol).first())
+        return IE.ensure_instrument_ready(db, row)
+    row = (db.query(Instrument)
+             .filter(Instrument.kind.in_(kinds), Instrument.name.ilike(f"%{raw}%"))
+             .order_by(Instrument.symbol).first())
+    return IE.ensure_instrument_ready(db, row) if row else None
 
 
 def _equity_row(symbol: str, db: Session) -> Instrument | None:
@@ -680,6 +682,9 @@ def _watch_payload(w: WatchItem, db: Session) -> dict:
                  .filter(Instrument.kind == "ETF", Instrument.symbol == w.symbol)
                  .one_or_none())
     m = row.meta if row else {}
+    if row:
+        IE.ensure_instrument_ready(db, row)
+        m = row.meta or {}
     href = w.href
     if not href and row:
         href = (f"/indices/{slug_for(row)}" if kind == "INDEX"

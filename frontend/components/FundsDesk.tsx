@@ -128,6 +128,7 @@ const FUND_TYPES = [
 ];
 
 const PERIODS = [
+  { key: "1w", label: "1 Week (1W)" },
   { key: "1m", label: "1 Month (1M)" },
   { key: "3m", label: "3 Months (3M)" },
   { key: "6m", label: "6 Months (6M)" },
@@ -1008,9 +1009,9 @@ export function FundDetail({ code }: { code: string }) {
         <div className="space-y-6">
           <section>
             <SectionTitle title="Returns ladder"
-                        sub="1M to 1Y are simple NAV returns; 3Y and 5Y are compound annual growth rates." />
+                        sub="1W to 1Y are simple NAV returns; 3Y and 5Y are compound annual growth rates." />
             <StatGrid items={[
-              ["1M", returns["1m"]], ["3M", returns["3m"]], ["6M", returns["6m"]],
+              ["1W", returns["1w"]], ["1M", returns["1m"]], ["3M", returns["3m"]], ["6M", returns["6m"]],
               ["1Y", returns["1y"]], ["3Y CAGR", returns["3y"]], ["5Y CAGR", returns["5y"]],
             ].map(([label, env]: any) => ({
               label,

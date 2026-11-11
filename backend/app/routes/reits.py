@@ -11,6 +11,7 @@ from app.core.db import get_db
 from app.data.adapters import yfinance_adapter as Y
 from app.models.models import Instrument
 from app.services import calc
+from app.services import instrument_engine as IE
 from app.services.contextual import not_applicable, not_disclosed, reported, source_issue
 
 router = APIRouter(prefix="/reits", tags=["reits & invit s (trusts)"])
@@ -28,6 +29,10 @@ def _row(r: Instrument) -> dict:
         "symbol": r.symbol, "name": r.name, "kind": r.kind,
         "last": _env(price, "trust price"),
         "changepct": _env(m.get("changepct"), "day change"),
+        "prev_close": _env(m.get("prevClose"), "previous close"),
+        "week52_high": _env(m.get("week52_high") or m.get("yearHigh"), "52-week high"),
+        "week52_low": _env(m.get("week52_low") or m.get("yearLow"), "52-week low"),
+        "spark": IE.sparkline(r),
         "asof": _env(m.get("asof"), "price date"),
         "market_cap": _env(m.get("marketCap"), "market cap"),
         "listing_date": _env(m.get("listingDate"), "listing date"),
@@ -51,6 +56,7 @@ def _row(r: Instrument) -> dict:
 def list_reits(db: Session = Depends(get_db)):
     rows = (db.query(Instrument)
               .filter(Instrument.kind.in_(("REIT", "INVIT"))).all())
+    IE.ensure_many(db, rows)
     items = [_row(r) for r in rows]
     items.sort(key=lambda x: x["symbol"])
     return {
@@ -65,19 +71,25 @@ def list_reits(db: Session = Depends(get_db)):
 
 
 @router.get("/{symbol}/intraday")
-def trust_intraday(symbol: str, interval: str = "5m",
+def trust_intraday(symbol: str, interval: str = "2m",
                    db: Session = Depends(get_db)):
     row = (db.query(Instrument)
              .filter(Instrument.kind.in_(("REIT", "INVIT")),
                      Instrument.symbol == symbol.upper()).one_or_none())
     if not row:
         raise HTTPException(404, "This trust is not in the seeded REIT/InvIT universe.")
+    IE.ensure_instrument_ready(db, row)
     hist = row.history or []
     meta = row.meta or {}
     prev = meta.get("prevClose") or (hist[-2]["c"] if len(hist) > 1 else None)
+    last_live = meta.get("lastPrice")
     try:
         data = Y.intraday(f"{row.symbol}.NS", interval=interval, period="5d")
         if len(data.get("points") or []) >= 2:
+            data["points"] = IE.stitch_live_point(
+                data["points"],
+                {"lastPrice": last_live, "live_time": meta.get("live_time"),
+                 "volume": meta.get("volume")})
             data["last"] = data["points"][-1]["c"]
             data["prevClose"] = prev
             if prev:
@@ -88,16 +100,19 @@ def trust_intraday(symbol: str, interval: str = "5m",
     except Exception:  # noqa: BLE001
         pass
     if len(hist) >= 2:
+        points = [{"datetime": h["date"], "date": h["date"], "time": "15:30",
+                   "o": h.get("o"), "h": h.get("h"), "l": h.get("l"),
+                   "c": h["c"], "v": h.get("v")} for h in hist[-60:]]
+        points = IE.stitch_live_point(
+            points, {"lastPrice": last_live, "live_time": meta.get("live_time")})
         return {
             "ticker": f"{row.symbol}.NS", "interval": "1d",
             "session": hist[-1]["date"],
             "source": "Yahoo Finance daily candles (intraday feed unavailable)",
-            "points": [{"datetime": h["date"], "date": h["date"], "time": "15:30",
-                        "o": h.get("o"), "h": h.get("h"), "l": h.get("l"),
-                        "c": h["c"], "v": h.get("v")} for h in hist[-60:]],
-            "last": hist[-1]["c"], "prevClose": prev,
-            "change": (round(hist[-1]["c"] - prev, 2) if prev else None),
-            "changepct": (round((hist[-1]["c"] / prev - 1) * 100, 2)
+            "points": points,
+            "last": points[-1]["c"], "prevClose": prev,
+            "change": (round(points[-1]["c"] - prev, 2) if prev else None),
+            "changepct": (round((points[-1]["c"] / prev - 1) * 100, 2)
                           if prev else None),
             "note": "The intraday feed did not answer; the last 60 daily closes "
                     "are shown instead of fabricating candles.",
@@ -112,6 +127,7 @@ def trust_detail(symbol: str, db: Session = Depends(get_db)):
                      Instrument.symbol == symbol.upper()).one_or_none())
     if not row:
         raise HTTPException(404, "This trust is not in the seeded REIT/InvIT universe.")
+    IE.ensure_instrument_ready(db, row)
     base = _row(row)
     hist = row.history or []
     closes = [h["c"] for h in hist]

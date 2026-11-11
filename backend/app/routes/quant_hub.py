@@ -52,10 +52,34 @@ def rangecast_workspace(symbol: str,
 
 
 # --------------------------------------------------------------- StreetPulse
+_STREETPULSE_CACHE: dict = {"at": 0.0, "limit": None, "payload": None}
+
+
 @router.get("/streetpulse")
 def streetpulse_workspace(limit: int = Query(12, ge=4, le=30),
                           db: Session = Depends(get_db)):
-    return streetpulse.build(db, limit=limit)
+    """Serve the 4 PM workspace from a short-lived cache.
+
+    The chain reads NSE sector flows and a news feed, so a cold rebuild takes
+    tens of seconds. Caching per `limit` keeps the pills responsive (a click
+    is just another limit) and falls back to the last good payload if a
+    rebuild fails.
+    """
+    import time as _t
+
+    now = _t.time()
+    cached = _STREETPULSE_CACHE.get("payload")
+    same = _STREETPULSE_CACHE.get("limit") == limit
+    if cached is not None and same and now - float(_STREETPULSE_CACHE.get("at") or 0) < 120:
+        return cached
+    try:
+        payload = streetpulse.build(db, limit=limit)
+    except Exception:  # noqa: BLE001
+        if cached is not None and same:
+            return cached
+        raise
+    _STREETPULSE_CACHE.update({"at": now, "limit": limit, "payload": payload})
+    return payload
 
 
 # -------------------------------------------------------------------- X-Ray

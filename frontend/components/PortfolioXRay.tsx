@@ -9,7 +9,10 @@ import { Panel, Metric, Pill, Bar, ErrLine, Note, Loading } from "@/components/q
 type HoldingInput = {
   kind: "EQUITY" | "ETF" | "MF";
   symbol?: string; code?: string; name: string;
+  mode: "LUMPSUM" | "SIP";
   quantity: number | null; price: number | null; value: number | null;
+  buy_date: string | null;
+  sip_amount: number | null; sip_start: string | null; sip_months: number | null;
 };
 type Lookup = {
   equities: { symbol: string; name: string; kind: string; sector?: string | null; last?: number | null }[];
@@ -31,17 +34,31 @@ type FeeDrag = {
   gross_return_pct: number; note: string;
 };
 type Analyze = {
-  summary: { holdings: number; unresolved: string[]; invested_rs: number; value_rs: number; pnl_rs: number; pnl_pct: number | null };
-  holdings: { kind: string; key: string; name: string; sector?: string | null; quantity: number | null; price: number | null; value_rs: number; weight_pct: number; ter_pct?: number | null; href?: string }[];
+  summary: { holdings: number; unresolved: string[]; invested_rs: number; value_rs: number; pnl_rs: number; pnl_pct: number | null; xirr_pct?: number | null };
+  holdings: {
+    kind: string; key: string; name: string; sector?: string | null;
+    mode?: string; quantity: number | null; units?: number | null;
+    price: number | null; current_price?: number | null;
+    value_rs: number; invested_rs?: number; pnl_rs?: number; pnl_pct?: number | null;
+    xirr_pct?: number | null; cagr_pct?: number | null; months?: number | null;
+    sip_amount?: number | null; buy_date?: string | null;
+    weight_pct: number; ter_pct?: number | null; href?: string;
+  }[];
   allocation: Allocation[]; sector_weights: SectorW[];
   overlap: Overlap; fee_drag: FeeDrag; notes: string[];
 };
 
+const base = { mode: "LUMPSUM" as const, buy_date: null, sip_amount: null, sip_start: null, sip_months: null };
+
 const SAMPLE: HoldingInput[] = [
-  { kind: "EQUITY", symbol: "RELIANCE", name: "Reliance Industries", quantity: 20, price: 1150, value: null },
-  { kind: "EQUITY", symbol: "HDFCBANK", name: "HDFC Bank", quantity: 40, price: 720, value: null },
-  { kind: "MF", code: "122639", name: "Parag Parikh Flexi Cap", quantity: null, price: null, value: 250000 },
-  { kind: "MF", code: "131670", name: "Aditya Birla Sun Life", quantity: null, price: null, value: 150000 },
+  { ...base, kind: "EQUITY", symbol: "RELIANCE", name: "Reliance Industries", quantity: 20, price: 1150, value: null },
+  { ...base, kind: "EQUITY", symbol: "HDFCBANK", name: "HDFC Bank", quantity: 40, price: 720, value: null },
+  { ...base, kind: "MF", code: "122639", name: "Parag Parikh Flexi Cap", quantity: null, price: null, value: 250000 },
+  {
+    ...base, kind: "MF", code: "131670", name: "Aditya Birla Sun Life",
+    mode: "SIP", quantity: null, price: null, value: null,
+    sip_amount: 10000, sip_start: "2023-01-05", sip_months: 24,
+  },
 ];
 
 export default function PortfolioXRay() {
@@ -69,7 +86,9 @@ export default function PortfolioXRay() {
       postJSON<Analyze>("/portfolio-xray/analyze", {
         holdings: holdings.map((h) => ({
           kind: h.kind, symbol: h.symbol, code: h.code, name: h.name,
-          quantity: h.quantity, price: h.price, value: h.value,
+          mode: h.mode, quantity: h.quantity, price: h.price, value: h.value,
+          buy_date: h.buy_date, sip_amount: h.sip_amount,
+          sip_start: h.sip_start, sip_months: h.sip_months,
         })),
       })
         .then((r) => { if (!dead) { setData(r); setErr(null); } })
@@ -106,14 +125,14 @@ export default function PortfolioXRay() {
             {results && (results.equities.length > 0 || results.funds.length > 0) && (
               <div className="absolute z-20 mt-1 w-full max-h-64 overflow-auto rounded-lg card p-1">
                 {results.equities.map((e) => (
-                  <button key={e.symbol} onClick={() => add({ kind: e.kind === "ETF" ? "ETF" : "EQUITY", symbol: e.symbol, name: e.name, quantity: 1, price: e.last ?? null, value: null })}
+                  <button key={e.symbol} onClick={() => add({ ...base, kind: e.kind === "ETF" ? "ETF" : "EQUITY", symbol: e.symbol, name: e.name, quantity: 1, price: e.last ?? null, value: null })}
                           className="w-full text-left px-2 py-1.5 rounded hover:bg-[var(--surface-2)] text-[11.5px]">
                     <b>{e.symbol}</b> <span className="muted">{e.name}</span>
                     <span className="muted"> · {e.kind}</span>
                   </button>
                 ))}
                 {results.funds.map((f) => (
-                  <button key={f.code} onClick={() => add({ kind: "MF", code: f.code, name: f.name, quantity: null, price: null, value: 100000 })}
+                  <button key={f.code} onClick={() => add({ ...base, kind: "MF", code: f.code, name: f.name, quantity: null, price: null, value: 100000 })}
                           className="w-full text-left px-2 py-1.5 rounded hover:bg-[var(--surface-2)] text-[11.5px]">
                     <b>{f.name}</b> <span className="muted"> · {f.amc || "Fund"} ({f.code})</span>
                   </button>
@@ -130,38 +149,79 @@ export default function PortfolioXRay() {
                   <th className="py-1 pr-1.5">Price</th><th className="py-1 pr-1.5">Value ₹</th><th className="py-1" />
                 </tr>
               </thead>
-              <tbody>
-                {holdings.map((h, i) => (
-                  <tr key={`${h.symbol || h.code}-${i}`} style={{ borderTop: "1px solid var(--line)" }}>
-                    <td className="py-1.5 pr-1.5">
-                      <div className="font-semibold">{h.symbol || h.code}</div>
-                      <div className="muted text-[9.5px] truncate max-w-[150px]">{h.name}</div>
-                    </td>
-                    <td className="py-1.5 pr-1.5">
-                      <input value={h.quantity ?? ""} inputMode="decimal" onChange={(e) => update(i, { quantity: e.target.value === "" ? null : Number(e.target.value) })}
-                             className="surface rounded px-1.5 py-1 text-[11px] knum w-[60px]" style={{ color: "var(--ink)" }} />
-                    </td>
-                    <td className="py-1.5 pr-1.5">
-                      <input value={h.price ?? ""} inputMode="decimal" onChange={(e) => update(i, { price: e.target.value === "" ? null : Number(e.target.value) })}
-                             className="surface rounded px-1.5 py-1 text-[11px] knum w-[72px]" style={{ color: "var(--ink)" }} />
-                    </td>
-                    <td className="py-1.5 pr-1.5">
-                      <input value={h.value ?? ""} inputMode="decimal" placeholder="override" onChange={(e) => update(i, { value: e.target.value === "" ? null : Number(e.target.value) })}
-                             className="surface rounded px-1.5 py-1 text-[11px] knum w-[88px]" style={{ color: "var(--ink)" }} />
-                    </td>
-                    <td className="py-1.5 text-right">
-                      <button onClick={() => remove(i)} className="muted text-[11px]" aria-label="Remove">✕</button>
-                    </td>
-                  </tr>
+              {holdings.map((h, i) => (
+                  <tbody key={`${h.symbol || h.code}-${i}`}>
+                    <tr style={{ borderTop: "1px solid var(--line)" }}>
+                      <td className="py-1.5 pr-1.5">
+                        <div className="font-semibold">{h.symbol || h.code}</div>
+                        <div className="muted text-[9.5px] truncate max-w-[150px]">{h.name}</div>
+                        <div className="flex gap-1 mt-0.5">
+                          {(["LUMPSUM", "SIP"] as const).map((m) => (
+                            <button key={m} onClick={() => update(i, { mode: m })}
+                                    className="text-[8.5px] uppercase tracking-wider rounded px-1 py-0.5"
+                                    style={{
+                                      border: "1px solid var(--line)",
+                                      fontWeight: h.mode === m ? 700 : 400,
+                                      color: h.mode === m ? "var(--accent)" : "var(--muted)",
+                                    }}>
+                              {m === "SIP" ? "SIP" : "Lump"}
+                            </button>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="py-1.5 pr-1.5">
+                        <input value={h.quantity ?? ""} inputMode="decimal" onChange={(e) => update(i, { quantity: e.target.value === "" ? null : Number(e.target.value) })}
+                               className="surface rounded px-1.5 py-1 text-[11px] knum w-[60px]" style={{ color: "var(--ink)" }} />
+                      </td>
+                      <td className="py-1.5 pr-1.5">
+                        <input value={h.price ?? ""} inputMode="decimal" onChange={(e) => update(i, { price: e.target.value === "" ? null : Number(e.target.value) })}
+                               className="surface rounded px-1.5 py-1 text-[11px] knum w-[72px]" style={{ color: "var(--ink)" }} />
+                      </td>
+                      <td className="py-1.5 pr-1.5">
+                        <input value={h.value ?? ""} inputMode="decimal" placeholder={h.mode === "SIP" ? "—" : "amount"} onChange={(e) => update(i, { value: e.target.value === "" ? null : Number(e.target.value) })}
+                               className="surface rounded px-1.5 py-1 text-[11px] knum w-[88px]" style={{ color: "var(--ink)" }} />
+                      </td>
+                      <td className="py-1.5 text-right">
+                        <button onClick={() => remove(i)} className="muted text-[11px]" aria-label="Remove">✕</button>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td colSpan={5} className="pb-1.5">
+                        {h.mode === "SIP" ? (
+                          <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                            <span className="muted">₹/month</span>
+                            <input value={h.sip_amount ?? ""} inputMode="decimal" placeholder="5000"
+                                   onChange={(e) => update(i, { sip_amount: e.target.value === "" ? null : Number(e.target.value) })}
+                                   className="surface rounded px-1.5 py-0.5 text-[10.5px] knum w-[72px]" style={{ color: "var(--ink)" }} />
+                            <span className="muted">start</span>
+                            <input type="date" value={h.sip_start ?? ""}
+                                   onChange={(e) => update(i, { sip_start: e.target.value || null })}
+                                   className="surface rounded px-1.5 py-0.5 text-[10.5px]" style={{ color: "var(--ink)" }} />
+                            <span className="muted">months</span>
+                            <input value={h.sip_months ?? ""} inputMode="numeric" placeholder="12"
+                                   onChange={(e) => update(i, { sip_months: e.target.value === "" ? null : Number(e.target.value) })}
+                                   className="surface rounded px-1.5 py-0.5 text-[10.5px] knum w-[52px]" style={{ color: "var(--ink)" }} />
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                            <span className="muted">buy date</span>
+                            <input type="date" value={h.buy_date ?? ""}
+                                   onChange={(e) => update(i, { buy_date: e.target.value || null })}
+                                   className="surface rounded px-1.5 py-0.5 text-[10.5px]" style={{ color: "var(--ink)" }} />
+                            <span className="muted">(optional · enables XIRR/CAGR)</span>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  </tbody>
                 ))}
-              </tbody>
             </table>
           </div>
           <div className="flex flex-wrap gap-1.5 mt-2">
             <button onClick={() => setHoldings(SAMPLE)} className="chip !text-[10px]">Load sample</button>
             <button onClick={() => setHoldings([])} className="chip !text-[10px]">Clear</button>
           </div>
-          <Note>For funds enter the current value (or leave quantity/price blank). For equities enter quantity and average price for a P&amp;L read.</Note>
+          <Note>Lump = quantity × buy price, or an invested amount dated by buy date. SIP = monthly instalments with units accumulated at each instalment&apos;s price. Current marks always come from the live price/NAV record — never the buy price.</Note>
         </Panel>
 
         {/* results */}
@@ -170,15 +230,56 @@ export default function PortfolioXRay() {
           {!data && !err && <Loading label="Waiting for holdings." />}
           {data && (
             <>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                 <Metric label="Portfolio value" value={inr(data.summary.value_rs)} sub={`${data.summary.holdings} holdings`} />
                 <Metric label="Invested" value={inr(data.summary.invested_rs)} sub="cost basis" />
                 <Metric label="P&L" value={inr(data.summary.pnl_rs)} sub={pct(data.summary.pnl_pct)} tone={(data.summary.pnl_rs ?? 0) >= 0 ? "up" : "down"} />
+                <Metric label="XIRR" value={data.summary.xirr_pct == null ? "—" : `${data.summary.xirr_pct}%`} sub="money-weighted" tone={(data.summary.xirr_pct ?? 0) >= 0 ? "up" : "down"} />
                 <Metric label="Annual fee" value={inr(data.fee_drag.annual_fee_rs)} sub={`blended TER ${data.fee_drag.blended_ter_pct ?? "—"}%`} tone="warn" />
               </div>
               {data.summary.unresolved.length > 0 && (
                 <Note>Could not resolve: {data.summary.unresolved.join(", ")}. Check the symbol or fund code.</Note>
               )}
+
+              <Panel title="Holdings · live P&L" sub="Lumpsum and monthly SIP positions marked at the real market price or NAV.">
+                <div className="scroll-x">
+                  <table className="w-full min-w-[640px] text-[11.5px]">
+                    <thead>
+                      <tr className="muted text-[9px] uppercase tracking-wider text-left">
+                        <th className="py-1 pr-2">Instrument</th><th className="py-1 pr-2">Mode</th>
+                        <th className="py-1 pr-2 text-right">Units</th><th className="py-1 pr-2 text-right">Invested</th>
+                        <th className="py-1 pr-2 text-right">Current</th><th className="py-1 pr-2 text-right">Value</th>
+                        <th className="py-1 pr-2 text-right">P&L</th><th className="py-1 text-right">XIRR</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.holdings.map((h, i) => (
+                        <tr key={`${h.key}-${i}`} style={{ borderTop: "1px solid var(--line)" }}>
+                          <td className="py-1.5 pr-2">
+                            <div className="font-semibold truncate max-w-[180px]">{h.key}</div>
+                            <div className="muted text-[9.5px] truncate max-w-[180px]">{h.name}</div>
+                          </td>
+                          <td className="py-1.5 pr-2 muted text-[10px]">
+                            {h.mode === "SIP" ? `SIP · ${h.months ?? 0}mo` : "Lump"}
+                            {h.buy_date ? <div className="text-[9px]">{h.buy_date}</div> : null}
+                          </td>
+                          <td className="py-1.5 pr-2 text-right knum">{h.units == null ? "—" : h.units}</td>
+                          <td className="py-1.5 pr-2 text-right knum">{inr(h.invested_rs ?? 0)}</td>
+                          <td className="py-1.5 pr-2 text-right knum">{h.current_price == null ? "—" : inr(h.current_price)}</td>
+                          <td className="py-1.5 pr-2 text-right knum">{inr(h.value_rs)}</td>
+                          <td className="py-1.5 pr-2 text-right knum" style={{ color: (h.pnl_rs ?? 0) >= 0 ? "var(--up)" : "var(--down)" }}>
+                            {inr(h.pnl_rs ?? 0)} <span className="muted text-[9.5px]">({pct(h.pnl_pct ?? null)})</span>
+                          </td>
+                          <td className="py-1.5 text-right knum" style={{ color: (h.xirr_pct ?? 0) >= 0 ? "var(--up)" : "var(--down)" }}>
+                            {h.xirr_pct == null ? "—" : `${h.xirr_pct}%`}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <Note>SIP XIRR uses each instalment as a dated cash outflow and today&apos;s value as the final inflow. CAGR is shown when only a single buy date is available.</Note>
+              </Panel>
 
               <Panel title="Asset allocation & sector weights" sub="Funds are looked through to their disclosed holdings for the sector split.">
                 <div className="grid sm:grid-cols-2 gap-4">

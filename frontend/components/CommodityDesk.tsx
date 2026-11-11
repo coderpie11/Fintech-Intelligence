@@ -8,6 +8,7 @@ import LineChart from "@/components/LineChart";
 import Tabs from "@/components/Tabs";
 import MetricTip from "@/components/MetricTip";
 import GoldSilverCalculator from "@/components/GoldSilverCalculator";
+import Sparkline from "@/components/Sparkline";
 
 function envNum(e?: Env): number | null {
   return e && e.value != null ? e.value : null;
@@ -20,6 +21,7 @@ type Metal = {
   inr_per_gram_22k: Env; inr_per_10g_22k: Env;
   inr_per_gram_silver: Env; inr_per_kg_silver: Env; inr_per_10g_silver: Env;
   note: Env; href: string;
+  spark?: number[];
 };
 
 export default function CommodityDesk() {
@@ -192,6 +194,7 @@ export default function CommodityDesk() {
                       return `${move >= 0 ? "+" : "−"}${inr(Math.abs(move))} ${isGold ? "per 10 g" : "per kg"}`;
                     })()}
                   </div>
+                  <Sparkline points={metal.spark} width={180} height={30} className="w-full mt-2" />
                 </div>
               </div>
 
@@ -212,6 +215,20 @@ export default function CommodityDesk() {
                   </div>
 
                   <StatGrid items={[
+                    { label: "1W", env: detail.returns?.["1w"], fmt: (v: number) => `${v.toFixed(2)}%`,
+                      tip: { meaning: "Simple return over the last 5 trading sessions, in rupee terms.", formula: "Return = (End ÷ Start − 1) × 100" } },
+                    { label: "1M", env: detail.returns?.["1m"], fmt: (v: number) => `${v.toFixed(2)}%`,
+                      tip: { meaning: "Simple return over the last 21 trading sessions.", formula: "Return = (End ÷ Start − 1) × 100" } },
+                    { label: "3M", env: detail.returns?.["3m"], fmt: (v: number) => `${v.toFixed(2)}%`,
+                      tip: { meaning: "Simple return over the last 63 trading sessions.", formula: "Return = (End ÷ Start − 1) × 100" } },
+                    { label: "6M", env: detail.returns?.["6m"], fmt: (v: number) => `${v.toFixed(2)}%`,
+                      tip: { meaning: "Simple return over the last 126 trading sessions.", formula: "Return = (End ÷ Start − 1) × 100" } },
+                    { label: "1Y", env: detail.returns?.["1y"], fmt: (v: number) => `${v.toFixed(2)}%`,
+                      tip: { meaning: "Simple return over the last 252 trading sessions.", formula: "Return = (End ÷ Start − 1) × 100" } },
+                    { label: "3Y CAGR", env: detail.returns?.["3y"], fmt: (v: number) => `${v.toFixed(2)}%`,
+                      tip: { meaning: "Compound annual growth over roughly 756 sessions.", formula: "CAGR = (End ÷ Start)^(1 ÷ Years) − 1" } },
+                    { label: "5Y CAGR", env: detail.returns?.["5y"], fmt: (v: number) => `${v.toFixed(2)}%`,
+                      tip: { meaning: "Compound annual growth across the full stored five-year series.", formula: "CAGR = (End ÷ Start)^(1 ÷ Years) − 1" } },
                     { label: "Volatility 1Y", env: detail.stats?.vol_annual, fmt: (v: number) => `${v.toFixed(2)}%`,
                       tip: { meaning: "Annualised standard deviation of daily returns over the last 252 sessions — how wide the metal's normal price swings are.",
                              formula: "σ_annual = σ_daily × √252" } },

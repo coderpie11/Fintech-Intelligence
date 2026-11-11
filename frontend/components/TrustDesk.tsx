@@ -7,6 +7,7 @@ import { fmtDate, inr, pct } from "@/lib/format";
 import { ErrorBox, PageHeader, RefreshButton, SectionTitle, Skeleton, StatGrid } from "@/components/PageKit";
 import LineChart from "@/components/LineChart";
 import MetricTip from "@/components/MetricTip";
+import Sparkline from "@/components/Sparkline";
 
 const TRUST_TIPS: Record<string, { meaning: string; formula?: string; example?: string }> = {
   occupancy: { meaning: "Share of leasable area that is actually leased. Higher occupancy means steadier rent." },
@@ -31,6 +32,7 @@ type Trust = {
   last: Env; changepct: Env; asof: Env; market_cap: Env; listing_date: Env;
   occupancy_pct: Env; wale_years: Env; cap_rate_pct: Env;
   ndcf_yield_pct: Env; debt_gav_pct: Env; nav_per_unit: Env;
+  prev_close?: Env; week52_high?: Env; week52_low?: Env; spark?: number[];
   distribution_split: Record<string, number>;
   distribution_rule: Env; yield: Env; facts_asof?: string; href: string;
 };
@@ -73,6 +75,7 @@ export function ReitList() {
                     {envNum(t.changepct) != null ? pct(envNum(t.changepct)) : "—"}
                   </span>
                 </div>
+                <Sparkline points={t.spark} width={260} height={38} className="w-full mt-2" />
                 <div className="grid grid-cols-2 gap-1.5 mt-3 text-[10.5px]">
                   <div className="flex justify-between"><span className="muted"><MetricTip label="Occupancy" tip={TRUST_TIPS.occupancy}>Occupancy</MetricTip></span><span className="knum">{envNum(t.occupancy_pct) != null ? `${envNum(t.occupancy_pct)!.toFixed(1)}%` : "—"}</span></div>
                   <div className="flex justify-between"><span className="muted"><MetricTip label="WALE" tip={TRUST_TIPS.wale}>WALE</MetricTip></span><span className="knum">{envNum(t.wale_years) != null ? `${envNum(t.wale_years)!.toFixed(1)}y` : "—"}</span></div>
@@ -312,6 +315,8 @@ export function ReitDetail({ symbol }: { symbol: string }) {
       <section className="mb-6">
         <SectionTitle title="Returns & risk" sub="Price returns from the stored five-year series; 3Y and 5Y are CAGR." />
         <StatGrid items={[
+          { label: "1W", env: d.returns?.["1w"], fmt: pct,
+            tip: { meaning: "Simple price return over the last 5 trading sessions.", formula: "Return = (End ÷ Start − 1) × 100" } },
           { label: "1M", env: d.returns?.["1m"], fmt: pct,
             tip: { meaning: "Simple price return over the last 21 trading sessions.", formula: "Return = (End ÷ Start − 1) × 100" } },
           { label: "3M", env: d.returns?.["3m"], fmt: pct,

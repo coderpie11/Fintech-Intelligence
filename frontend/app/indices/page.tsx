@@ -8,6 +8,7 @@ import { ErrorBox, PageHeader, RefreshButton, Skeleton } from "@/components/Page
 import MarketClock from "@/components/MarketClock";
 import MetricTip from "@/components/MetricTip";
 import PreMarketStrip from "@/components/PreMarketStrip";
+import Sparkline from "@/components/Sparkline";
 
 type Idx = {
   slug: string; symbol: string; name: string; full_name: string; group?: string;
@@ -21,26 +22,6 @@ const GROUPS = ["All", "Benchmark", "Broad", "Sectoral", "Thematic", "Volatility
 
 function envVal<T = number>(e?: Env<T>): T | null {
   return e && e.value != null ? e.value : null;
-}
-
-function Spark({ points }: { points: number[] }) {
-  if (!points || points.length < 2) {
-    return <div className="h-9 rounded" style={{ background: "var(--surface-2)" }} />;
-  }
-  const W = 140, H = 38;
-  const min = Math.min(...points), max = Math.max(...points);
-  const span = max - min || 1;
-  const x = (i: number) => (i / (points.length - 1)) * W;
-  const y = (v: number) => H - 3 - ((v - min) / span) * (H - 6);
-  const path = points.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p).toFixed(1)}`).join(" ");
-  const up = points[points.length - 1] >= points[0];
-  const color = up ? "var(--up)" : "var(--down)";
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-9" preserveAspectRatio="none" aria-hidden>
-      <path d={`${path} L${W},${H} L0,${H} Z`} fill={color} opacity="0.10" />
-      <path d={path} fill="none" stroke={color} strokeWidth="1.6" strokeLinejoin="round" />
-    </svg>
-  );
 }
 
 function RangeBar({ last, low, high }: { last?: number | null; low?: number | null; high?: number | null }) {
@@ -188,7 +169,7 @@ export default function IndicesPage() {
                       </div>
                     </div>
                     <div className="w-[44%]">
-                      <Spark points={i.spark} />
+                      <Sparkline points={i.spark} width={140} height={38} className="w-full" />
                     </div>
                   </div>
 
