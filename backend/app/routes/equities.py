@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 import statistics
+import threading
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -11,6 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session, defer
 
+from app.core.config import cache_get, cache_set
 from app.core.db import get_db
 from app.data.adapters import screener_adapter as S
 from app.data.adapters import stockanalysis_adapter as SA
@@ -94,6 +97,27 @@ def _loaded_history(row: Instrument) -> list:
     return row.history or []
 
 
+def _sort_key(r: Instrument, sort: str) -> tuple:
+    """Comparable ordering key for one card, from stored ``meta`` only.
+
+    Returns a one-element tuple holding the primary value plus a stable tie
+    break, so ``sort`` of the list behaves exactly like sorting the shaped
+    cards while touching no JSON history column.
+    """
+    m = r.meta or {}
+    chg = m.get("changepct")
+    if sort == "gainers":
+        return ((chg if chg is not None else -1e18), r.symbol)
+    if sort == "losers":
+        return (-(chg if chg is not None else -1e18), r.symbol)
+    if sort == "symbol":
+        return (r.symbol, r.symbol)
+    if sort == "pe":
+        pe = m.get("pe") or ((m.get("fundamentals") or {}).get("valuation") or {}).get("pe")
+        return ((pe if pe else 1e18), r.symbol)
+    return ((_ratio(m.get("marketCap"), 2) or 0.0), r.symbol)
+
+
 def _snap(r: Instrument) -> dict:
     m = r.meta or {}
     x = _extra(r)
@@ -170,17 +194,91 @@ def _snap(r: Instrument) -> dict:
     }
 
 
+def _fundamentals_age_ok(fund: dict | None, hours: int = 12) -> bool:
+    if not fund:
+        return False
+    try:
+        stamp = dt.datetime.fromisoformat(
+            str(fund.get("fetched_at", "")).replace("Z", ""))
+    except Exception:  # noqa: BLE001
+        return False
+    return (dt.datetime.utcnow() - stamp).total_seconds() < hours * 3600
+
+
+_RESEARCH_INFLIGHT: set[str] = set()
+_RESEARCH_GUARD = threading.Lock()
+
+
 def _ensure_research(db: Session, row: Instrument, force: bool = False) -> dict:
-    """Fetch and cache the expensive Yahoo/Screener payloads on the instrument."""
+    """Serve stored research instantly; rebuild it off the request path.
+
+    The fundamentals/statements chain is several free-provider round-trips. A
+    detail page must never wait for them: whatever is stored is returned now,
+    and one single-flight daemon thread rebuilds the payload in the background
+    (it becomes visible on the next request). Only ``force=True`` — an explicit
+    user action ("refresh") — rebuilds synchronously.
+    """
     meta = dict(row.meta or {})
-    fund = meta.get("fundamentals")
-    fresh = False
-    if fund and not force:
+    if force:
+        return _build_research(db, row, meta, force=True)
+    stale = (
+        not _fundamentals_age_ok(meta.get("fundamentals"))
+        or not meta.get("statements_screener_consolidated")
+        or not meta.get("shareholding")
+        or not meta.get("statements_standalone")
+    )
+    if not stale:
+        return meta
+    _refresh_research_async(row.symbol)
+    return meta
+
+
+def _refresh_research_async(symbol: str) -> None:
+    """Queue one background rebuild per symbol; never blocks the caller."""
+    key = (symbol or "").upper()
+    with _RESEARCH_GUARD:
+        if key in _RESEARCH_INFLIGHT:
+            return
+        _RESEARCH_INFLIGHT.add(key)
+
+    def _work():
+        from app.core.config import cache_get
+        from app.core.db import SessionLocal
+
+        # One rebuild job globally is enough for a demo box; a burst of page
+        # views must not stack up provider calls.
+        if cache_get("research:busy") is not None:
+            with _RESEARCH_GUARD:
+                _RESEARCH_INFLIGHT.discard(key)
+            return
+        cache_set("research:busy", 1, ttl=20)
+        s = SessionLocal()
         try:
-            stamp = dt.datetime.fromisoformat(fund.get("fetched_at", "").replace("Z", ""))
-            fresh = (dt.datetime.utcnow() - stamp).total_seconds() < 12 * 3600
+            srow = (s.query(Instrument)
+                     .filter(Instrument.kind == "EQUITY",
+                             Instrument.symbol == key).one_or_none())
+            if srow is not None:
+                _build_research(s, srow, dict(srow.meta or {}), force=False)
         except Exception:  # noqa: BLE001
-            fresh = False
+            try:
+                s.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            s.close()
+            with _RESEARCH_GUARD:
+                _RESEARCH_INFLIGHT.discard(key)
+
+    threading.Thread(target=_work, daemon=True,
+                     name=f"research-{key[:14]}").start()
+
+
+def _build_research(db: Session, row: Instrument, meta: dict,
+                    force: bool = False) -> dict:
+    """Fetch and cache the expensive Yahoo/Screener payloads on the instrument."""
+    fresh = False
+    if meta.get("fundamentals") and not force:
+        fresh = _fundamentals_age_ok(meta.get("fundamentals"))
     if not fresh:
         try:
             built = F.build(row.symbol, meta, row.history or [])
@@ -254,8 +352,7 @@ def _ensure_research(db: Session, row: Instrument, force: bool = False) -> dict:
             if attempt == 2:
                 break
             try:
-                import time as _time
-                _time.sleep(0.35)
+                time.sleep(0.35)
             except Exception:  # noqa: BLE001
                 break
     return meta
@@ -271,6 +368,11 @@ def list_stocks(q: str | None = None, sector: str | None = None,
                .options(defer(Instrument.history))
                .filter(Instrument.kind == "EQUITY"))
     q_mode = bool(q and q.strip())
+    cache_key = f"stocks:list:{sort}:{limit}:{sector}:{index}"
+    if not q_mode:
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return cached
     if q_mode:
         from app.services import fuzzy
         from app.services import stock_loader
@@ -292,42 +394,54 @@ def list_stocks(q: str | None = None, sector: str | None = None,
         rows = [r for r in rows if (r.sector or "") == sector]
     # Fill quote + 52-week metrics that a provider omitted, from stored bars.
     IE.ensure_many(db, rows)
-    items = [_snap(r) for r in rows]
+    # A sort needs one comparable number per row, not the full card. Reading the
+    # keys straight out of ``meta`` keeps the whole-universe pass a few dict
+    # lookups; only the page actually returned is shaped by ``_snap``. Prices
+    # move, so the cached key list expires within a minute.
+    keys = cache_get(f"stocks:sortkeys:{sort}")
+    if keys is None or len(keys) != len(rows):
+        keys = [_sort_key(r, sort) for r in rows]
+        cache_set(f"stocks:sortkeys:{sort}", keys, ttl=20)
     if not q_mode:
         # Discovery rows without a price stay out of the browse table, but a
         # search must be able to find them by name and open them on demand.
-        items = [i for i in items if (i["last"]["value"] is not None)]
+        kept = [(k, r) for k, r in zip(keys, rows) if k[0] is not None]
+        keys = [k[0] for k in kept]
+        rows = [k[1] for k in kept]
     if index:
         want = index.strip().upper()
-        items = [i for i in items
-                 if any(str(x).upper() == want for x in (i["indices"]["value"] or []))]
-    index_names = sorted({str(x) for i in items
-                          for x in (i["indices"]["value"] or [])})
-    keymap = {
-        "mcap": lambda i: i["market_cap"]["value"] or 0,
-        "gainers": lambda i: (i["changepct"]["value"] or 0),
-        "losers": lambda i: -(i["changepct"]["value"] or 0),
-        "symbol": lambda i: i["symbol"],
-        "pe": lambda i: (i["pe"]["value"] or 1e18),
-    }
+        kept = [(k, r) for k, r in zip(keys, rows)
+                if any(str(x).upper() == want for x in ((r.meta or {}).get("indices") or []))]
+        keys = [k[0] for k in kept]
+        rows = [k[1] for k in kept]
+    index_names = sorted({str(x) for r in rows
+                          for x in ((r.meta or {}).get("indices") or [])})
+    order = list(range(len(rows)))
     if not q_mode:
-        items.sort(key=keymap.get(sort, keymap["mcap"]), reverse=(sort in ("gainers", "mcap")))
-    sectors = sorted({i["sector"] for i in items if i["sector"]})
+        reverse = sort in ("gainers", "mcap")
+        order.sort(key=lambda i: keys[i], reverse=reverse)
+    sectors = sorted({(r.sector or (r.meta or {}).get("sector"))
+                      for r in rows
+                      if r.sector or (r.meta or {}).get("sector")})
     # Reconcile only the page being returned: a 45-symbol batch download keeps
     # the screener live without making the request wait for the whole universe.
-    page = items[:limit]
-    by_symbol = {r.symbol: r for r in rows}
-    page_rows = [by_symbol[i["symbol"]] for i in page if i["symbol"] in by_symbol]
+    page_rows = [rows[i] for i in order[:limit]]
     # Only cards that actually need a provider call are reconciled: a closed
     # market already stores the final session print, and an open market caps
     # the page batch so a 250-row table still paints in seconds.
     LQ.list_rows(db, page_rows, cap=90, touch_history=False)
-    refreshed = {r.symbol: _snap(r) for r in page_rows}
-    page = [refreshed.get(i["symbol"], i) for i in page]
-    return {"count": len(items), "stocks": page, "sectors": sectors,
-            "indices": index_names, "sort": sort,
-            "sorts_available": list(keymap),
-            "live_source": LQ.QUOTE_SOURCE, "query": q}
+    page = [_snap(r) for r in page_rows]
+    payload = {"count": len(rows), "stocks": page, "sectors": sectors,
+               "indices": index_names, "sort": sort,
+               "sorts_available": ["mcap", "gainers", "losers", "symbol", "pe"],
+               "live_source": LQ.QUOTE_SOURCE, "query": q}
+    # The browse table is a pure read of the stored snapshot for a fixed query,
+    # so repeat page loads and filter clicks are served from memory. A short TTL
+    # keeps the prices moving and the cache can never mask a live refresh for
+    # longer than a page tick.
+    if not q_mode:
+        cache_set(f"stocks:list:{sort}:{limit}:{sector}:{index}", payload, ttl=15)
+    return payload
 
 
 # ---------------------------------------------------------------- peers
@@ -415,49 +529,9 @@ def stock_intraday(symbol: str, interval: str = "2m",
     if not row:
         raise HTTPException(404, f"{symbol} not in the seeded universe yet")
     IE.ensure_instrument_ready(db, row)
-    quote = LQ.refresh_one(db, row)
-    ticker = f"{row.symbol}.NS"
-    try:
-        data = Y.intraday(ticker, interval=interval, period="5d")
-        if data["points"]:
-            data["points"] = IE.stitch_live_point(data["points"], row.meta)
-            last = data["points"][-1]
-            data["last"] = last["c"]
-            if quote:
-                data["prevClose"] = quote.get("prevClose")
-                data["change"] = quote.get("change")
-                data["changepct"] = quote.get("changepct")
-                data["asof"] = quote.get("asof")
-                data["session_date"] = quote.get("session")
-                data["live_source"] = quote.get("source")
-            else:
-                prev = data["points"][0]
-                data["changepct"] = (round((last["c"] / prev["o"] - 1) * 100, 2)
-                                     if prev.get("o") else None)
-            return data
-    except Exception:  # noqa: BLE001
-        pass
-    hist = row.history or []
-    if len(hist) >= 2:
-        last_bar, prev_bar = hist[-1], hist[-2]
-        change = round(last_bar["c"] - prev_bar["c"], 2)
-        points = [{"datetime": h["date"], "date": h["date"], "time": "15:30",
-                   "o": h.get("o"), "h": h.get("h"), "l": h.get("l"),
-                   "c": h["c"], "v": h.get("v")} for h in hist[-60:]]
-        points = IE.stitch_live_point(points, row.meta)
-        return {
-            "ticker": ticker, "interval": "1d", "session": last_bar["date"],
-            "source": "Yahoo Finance daily candles (intraday feed unavailable)",
-            "points": points,
-            "last": points[-1]["c"],
-            "prevClose": prev_bar["c"],
-            "change": change,
-            "changepct": round((last_bar["c"] / prev_bar["c"] - 1) * 100, 2),
-            "asof": (quote or {}).get("asof"),
-            "note": "The intraday feed did not answer; the last 60 daily closes "
-                    "are shown instead of fabricating candles.",
-        }
-    raise HTTPException(503, "No price history available for this symbol yet.")
+    from app.services import instant_intraday as II
+
+    return II.get_intraday(db, row, f"{row.symbol}.NS", interval=interval)
 
 
 # ---------------------------------------------------------------- detail

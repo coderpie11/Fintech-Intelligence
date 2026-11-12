@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from datetime import date
 
@@ -367,7 +368,7 @@ def _llm_sql(question: str, db: Session) -> dict:
               f"Question: {question}\n\nReturn the JSON object.")
     try:
         out = LLM.complete(prompt, system=_SQL_SYSTEM, max_tokens=900,
-                           json_mode=True, route="ask-dalal-sql")
+                           json_mode=True, route="ask-dalal-sql", timeout_s=4)
     except LLM.LlmUnavailable as e:
         return {"used": False, "error": str(e)[:300], "attempts": e.attempts}
     parsed = LLM.extract_json(out.text) or {}
@@ -609,6 +610,22 @@ def _deterministic_sections(f: dict) -> list[dict]:
     ]
 
 
+def _llm_allowed(prefer_llm: bool) -> bool:
+    """LLM enrichment is opt-in so the deterministic report is always instant.
+
+    A free Render instance cannot afford a 30-second provider stall inside an
+    HTTP request. The stored-data report is complete on its own; set
+    ``ASK_DALAL_LLM=1`` to let a configured provider enrich it under a strict
+    4-second budget.
+    """
+    if not prefer_llm:
+        return False
+    flag = os.getenv("ASK_DALAL_LLM", "0").strip().lower()
+    if flag in ("", "0", "false", "no", "off"):
+        return False
+    return LLM.configured()
+
+
 def research_note(question: str, db: Session, symbol: str | None = None,
                   prefer_llm: bool = True) -> dict:
     """Build a five-section institutional note for a company-specific question."""
@@ -620,14 +637,14 @@ def research_note(question: str, db: Session, symbol: str | None = None,
     sections: list[dict] | None = None
     llm_meta: dict = {"used": False}
 
-    if prefer_llm and LLM.configured():
+    if _llm_allowed(prefer_llm):
         try:
             out = LLM.complete(
                 "Company facts JSON:\n"
                 + json.dumps(facts, ensure_ascii=False, default=str)
                 + f"\n\nReader question: {question}\n\nReturn the JSON object.",
                 system=_RESEARCH_SYSTEM, max_tokens=1600, json_mode=True,
-                route="ask-dalal-research", timeout_s=30)
+                route="ask-dalal-research", timeout_s=4)
             parsed = LLM.extract_json(out.text) or {}
             got = parsed.get("sections")
             if isinstance(got, list) and len(got) >= 5:
@@ -667,7 +684,7 @@ def ask_screener(question: str, db: Session, prefer_llm: bool = True) -> dict:
     ensure_views()
     llm = {"used": False}
     result = None
-    if prefer_llm and LLM.configured():
+    if _llm_allowed(prefer_llm):
         llm = _llm_sql(question, db)
         if llm.get("used") and llm.get("sql"):
             result = run_sql(llm["sql"])
@@ -718,11 +735,12 @@ def answer_documents(question: str, db: Session, symbol: str | None = None,
         for i, h in enumerate(hits["hits"]))
     llm = {"used": False}
     answer = None
-    if prefer_llm and LLM.configured():
+    if _llm_allowed(prefer_llm):
         try:
             out = LLM.complete(
                 f"Question: {question}\n\nContext:\n{context}",
-                system=_RAG_SYSTEM, max_tokens=700, route="ask-dalal-rag")
+                system=_RAG_SYSTEM, max_tokens=700, route="ask-dalal-rag",
+                timeout_s=4)
             answer = out.text
             llm = {"used": True, "provider": out.provider, "model": out.model,
                    "tier": out.tier}

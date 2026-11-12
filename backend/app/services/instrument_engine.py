@@ -325,19 +325,27 @@ def ensure_instrument_ready(
     min_points: int = MIN_POINTS,
     max_age: int = STALE_SECONDS,
     persist: bool = True,
+    force_sync: bool = False,
 ) -> Instrument:
     """Guarantee a complete instrument payload for any asset class.
 
-    Cheap metric repair always runs. History and the live quote are only
-    touched when the stored data is actually missing or stale, so a warm row
-    costs no network calls.
+    When the row already carries a stored price, this is pure SQLite work: the
+    quote is refreshed by the throttled background worker in
+    :mod:`app.services.live_quote`, never on the request path. Only a genuinely
+    unseeded symbol (no ``lastPrice``) pays for one bounded synchronous fetch.
     """
     changed = backfill_metrics(row)
+
+    if not force_sync and LQ.has_stored_price(row):
+        if persist and changed:
+            LQ.commit_with_retry(db)
+        LQ.background_refresh([row])
+        return row
 
     hist_len = len(history_points(row))
     if need_history is None:
         need_history = hist_len < min_points
-    if need_history:
+    if need_history and not LQ.has_stored_price(row):
         changed = sync_history(row) or changed
 
     if refresh is None:
@@ -444,16 +452,11 @@ def performance_ladder(row: Instrument) -> dict:
 
 # ------------------------------------------------------------------- funds
 def ensure_fund_ready(db: Session, scheme: FundScheme, persist: bool = True) -> FundScheme:
-    """Fetch a fund's NAV series when it is missing or stale (any scheme)."""
+    """Serve stored NAVs immediately; only an empty series hits AMFI."""
     navs = scheme.navs or []
-    fresh_enough = len(navs) >= NAV_MIN_POINTS
-    if fresh_enough:
-        try:
-            last_day = dt.date.fromisoformat(str(navs[-1].get("date")))
-            fresh_enough = (now_ist().date() - last_day).days <= NAV_STALE_DAYS
-        except (TypeError, ValueError, KeyError):
-            fresh_enough = False
-    if fresh_enough:
+    if navs:
+        # A stale NAV is yesterday's published close, not an error: the fund
+        # page must never wait on an AMFI round-trip during a live demo.
         return scheme
     try:
         series = F.nav_series(scheme.code)

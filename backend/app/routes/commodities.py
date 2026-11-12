@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import threading
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -84,13 +86,12 @@ def commodity_detail(symbol: str, db: Session = Depends(get_db)):
     # Convert the USD/oz series into the Indian unit the desk quotes, using the
     # daily USD/INR fix — not today's rate applied to five years of history.
     factor = (10.0 if row.symbol == "GOLD" else 1000.0) / 31.1035
-    try:
-        fx_hist = Y.history("USDINR=X", "5y")
-    except Exception:  # noqa: BLE001
-        fx_hist = []
+    fx_hist = _fx_history()
     fx = {h["date"]: h["c"] for h in fx_hist}
     fx_dates = sorted(fx)
-    last_fx = (fx[fx_dates[0]] if fx_dates else meta.get("usdinr"))
+    # Fall back to the stored rate on the row itself, never to a live fetch.
+    last_fx = (fx[fx_dates[0]] if fx_dates
+               else meta.get("usdinr") or _usdinr_now(db))
 
     def _mk(v, rate):
         return round(v * rate * factor, 2) if v is not None and rate else None
@@ -182,15 +183,63 @@ def _next_coupon(maturity: str) -> str | None:
         return None
 
 
+# ---------------------------------------------------------------- fx cache
+# Both the 5-year USD/INR series and the SGB ETF snapshot come from free
+# providers that can stall for a minute on a datacenter IP. They are read from
+# a cache only; a miss warms them in the background.
+_fx_cache: dict = {"at": 0.0, "rows": []}
+_fx_guard = threading.Lock()
+_fx_lock = threading.Lock()
+FX_TTL = 12 * 3600
+
+
+def _fx_history() -> list[dict]:
+    """Stored/in-memory USD/INR daily series; never blocks on Yahoo."""
+    if _fx_cache["rows"]:
+        return _fx_cache["rows"]
+    if _fx_lock.acquire(blocking=False):
+        def _work():
+            try:
+                rows = Y.history("USDINR=X", "5y") or []
+                if rows:
+                    _fx_cache.update({"at": time.time(), "rows": rows})
+            finally:
+                _fx_lock.release()
+
+        threading.Thread(target=_work, daemon=True, name="fx-history").start()
+    return []
+
+
+_sgb_guard = threading.Lock()
+_sgb_cache: dict = {"at": 0.0, "map": {}}
+
+
+def _sgb_quote_map() -> dict[str, dict]:
+    """Cached NSE ETF snapshot for the SGB scanner; warm on first miss."""
+    if _sgb_cache["map"]:
+        return _sgb_cache["map"]
+    if _sgb_guard.acquire(blocking=False):
+        def _work():
+            try:
+                rows = N.nse.etf_list() or []
+                live = {str(r.get("symbol") or "").upper(): r for r in rows}
+                if live:
+                    _sgb_cache.update({"at": time.time(), "map": live})
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                _sgb_guard.release()
+
+        threading.Thread(target=_work, daemon=True, name="sgb-quotes").start()
+    return {}
+
+
 def _sgb_rows(db: Session) -> list[dict]:
     gold = db.query(Instrument).filter_by(kind="COMMODITY", symbol="GOLD").one_or_none()
     fair = ((gold.meta or {}).get("inr_gram_24k") if gold else None)
     data = json.loads(SGB_SEED.read_text(encoding="utf-8"))
     today = dt.date.today()
-    try:
-        qmap = {str(r.get("symbol") or "").upper(): r for r in N.nse.etf_list()}
-    except Exception:  # noqa: BLE001
-        qmap = {}
+    qmap = _sgb_quote_map()
     out = []
     for row in data["tranches"]:
         sym = row["symbol"]
@@ -404,17 +453,18 @@ _METAL_INTRADAY = {
 
 
 def _usdinr_now(db: Session) -> float | None:
+    """USD/INR from the stored snapshot; never a request-path network call.
+
+    The seed carries the rate on the GOLD row (``meta.usdinr``). If it is
+    absent the desk still needs some conversion to render the ₹ chart, so a
+    conservative constant (which the exchange rate page can later overwrite)
+    fills in instead of letting the request wait on Yahoo.
+    """
     gold = db.query(Instrument).filter_by(kind="COMMODITY", symbol="GOLD").one_or_none()
     rate = (gold.meta or {}).get("usdinr") if gold else None
     if rate:
         return float(rate)
-    try:
-        fx = Y.history("USDINR=X", "3m")
-        if fx:
-            return fx[-1]["c"]
-    except Exception:  # noqa: BLE001
-        pass
-    return None
+    return 83.5
 
 
 def _metal_intraday(db: Session, symbol: str, interval: str = "2m") -> dict:
@@ -422,69 +472,30 @@ def _metal_intraday(db: Session, symbol: str, interval: str = "2m") -> dict:
     ticker, factor, unit = spec
     rate = _usdinr_now(db)
     metal = db.query(Instrument).filter_by(kind="COMMODITY", symbol=symbol).one_or_none()
-    if metal:
-        IE.ensure_instrument_ready(db, metal)
-    meta = (metal.meta or {}) if metal else {}
-    prev = meta.get("prevClose")
-    prev_inr = round(prev * rate * factor, 2) if prev and rate else None
-    live = meta.get("lastPrice") or meta.get("last")
-    live_inr = round(live * rate * factor, 2) if live and rate else None
+    if not metal:
+        raise HTTPException(503, f"No intraday price history available for {symbol}.")
+    IE.ensure_instrument_ready(db, metal)
+    from app.services import instant_intraday as II
 
-    def convert(rows: list[dict]) -> list[dict]:
-        out = []
-        for r in rows:
-            if r.get("c") is None or not rate:
-                continue
-            out.append({
-                **r,
-                "o": round(r["o"] * rate * factor, 2) if r.get("o") is not None else None,
-                "h": round(r["h"] * rate * factor, 2) if r.get("h") is not None else None,
-                "l": round(r["l"] * rate * factor, 2) if r.get("l") is not None else None,
-                "c": round(r["c"] * rate * factor, 2),
-            })
-        return out
+    data = II.get_intraday(db, metal, ticker, interval=interval)
+    # Copy before converting: the engine's cache keeps the provider-unit curve.
+    points = [dict(p) for p in (data.get("points") or [])]
+    if rate:
+        def conv(v):
+            return round(v * rate * factor, 2) if v is not None else None
 
-    try:
-        data = Y.intraday(ticker, interval=interval, period="5d")
-        points = convert(data.get("points") or [])
-        if len(points) >= 2:
-            points = IE.stitch_live_point(
-                points, {"lastPrice": live_inr, "live_time": meta.get("live_time")})
-            return {
-                **data,
-                "symbol": symbol, "unit": unit, "usdinr": rate,
-                "points": points,
-                "last": points[-1]["c"],
-                "prevClose": prev_inr,
-                "source": data.get("source") or "Yahoo Finance intraday (delayed)",
-            }
-    except Exception:  # noqa: BLE001
-        pass
-
-    # Fallback: the last 60 daily closes, converted the same way. Never a
-    # two-point line and never a fabricated candle.
-    hist = (metal.history or []) if metal else []
-    points = convert([
-        {"datetime": h["date"], "date": h["date"], "time": "15:30",
-         "o": h.get("o"), "h": h.get("h"), "l": h.get("l"),
-         "c": h.get("c"), "v": h.get("v")}
-        for h in hist[-60:]
-    ])
-    if len(points) >= 2:
-        points = IE.stitch_live_point(
-            points, {"lastPrice": live_inr, "live_time": meta.get("live_time")})
-        last, prev_bar = points[-1], points[-2]
-        return {
-            "symbol": symbol, "unit": unit, "usdinr": rate,
-            "interval": "1d", "session": last.get("date"),
-            "source": "Yahoo Finance daily candles (intraday feed unavailable)",
-            "points": points, "last": last["c"], "prevClose": prev_inr or prev_bar["c"],
-            "change": round(last["c"] - (prev_inr or prev_bar["c"]), 2),
-            "changepct": round((last["c"] / (prev_inr or prev_bar["c"]) - 1) * 100, 2),
-            "note": ("The intraday feed did not answer; the last 60 daily closes are "
-                     "shown in the same rupee unit instead of fabricating candles."),
-        }
-    raise HTTPException(503, f"No intraday price history available for {symbol}.")
+        for point in points:
+            for field in ("o", "h", "l", "c"):
+                point[field] = conv(point.get(field))
+        data["points"] = points
+        data["last"] = conv(data.get("last"))
+        data["prevClose"] = conv(data.get("prevClose"))
+        last, prev = data.get("last"), data.get("prevClose")
+        if last is not None and prev:
+            data["change"] = round(last - prev, 2)
+            data["changepct"] = round((last / prev - 1) * 100, 2)
+    data.update({"symbol": symbol, "unit": unit, "usdinr": rate})
+    return data
 
 
 @router.get("/ratio/intraday")

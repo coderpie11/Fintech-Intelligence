@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 
 import httpx
 
@@ -111,10 +112,35 @@ def latest_navs() -> list[dict]:
     hit = cache_get("mfapi:navall")
     if hit is not None:
         return hit
-    r = httpx.get(f"{BASE}/mf/latest", timeout=120)
-    data = r.json()
-    cache_set("mfapi:navall", data, ttl=12 * 3600)
-    return data
+    _refresh_latest_navs_async()
+    return []
+
+
+_latest_guard = threading.Lock()
+
+
+def _refresh_latest_navs_async() -> None:
+    """Warm the daily NAV dump off the request path.
+
+    The dump is a multi-megabyte download that took seconds on a shared vCPU;
+    no HTTP request may wait for it when every stored scheme already carries
+    its own NAV series.
+    """
+    if not _latest_guard.acquire(blocking=False):
+        return
+
+    def _work():
+        try:
+            r = httpx.get(f"{BASE}/mf/latest", timeout=30)
+            data = r.json()
+            if data:
+                cache_set("mfapi:navall", data, ttl=12 * 3600)
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            _latest_guard.release()
+
+    threading.Thread(target=_work, daemon=True, name="amfi-navall").start()
 
 
 def latest_nav_map() -> dict[str, float]:

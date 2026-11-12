@@ -26,6 +26,7 @@ import time
 from sqlalchemy import text
 from sqlalchemy.orm import Session, defer, load_only
 
+from app.core.config import cache_get, cache_set
 from app.data.adapters import nse_adapter as N
 from app.models.models import Instrument
 from app.services.ai_engine import sentiment as S
@@ -34,6 +35,13 @@ from app.services.ai_engine import sentiment as S
 # run concurrently inside it, so a cold request finishes well under two seconds
 # even when a free feed is hanging — comfortably inside the 4-second ceiling.
 FETCH_BUDGET_S = 1.4
+# External feeds are refreshed strictly off the request path. One job at a time,
+# with a cooldown, so a throttled render box never spawns a fetch stampede.
+EXTERNAL_BUDGET_S = 2.5
+EXTERNAL_COOLDOWN = 55.0
+_external_guard = threading.Lock()
+_external_lock = threading.Lock()
+_external_last = [0.0]
 
 SECTOR_FALLBACK = "Diversified"
 
@@ -84,13 +92,7 @@ DIVERGENCE_NOTE = (
     "research prompt, not a recommendation.")
 
 
-def _flows() -> dict:
-    try:
-        raw = N.nse.fii_dii()
-    except Exception as e:  # noqa: BLE001
-        return {"available": False, "reason": f"{type(e).__name__}: {e}"[:180],
-                "fii_net_cr": None, "dii_net_cr": None, "asof": None,
-                "note": "NSE did not answer the provisional FII/DII endpoint."}
+def _flows_from_raw(raw: list[dict], derived: bool = False) -> dict:
     fii = next((r for r in raw if "FII" in (r.get("category") or "").upper()), None)
     dii = next((r for r in raw if "DII" in (r.get("category") or "").upper()), None)
 
@@ -124,9 +126,24 @@ def _flows() -> dict:
         "dii_sell_cr": num(dii.get("sellValue")) if dii else None,
         "combined_net_cr": combined,
         "regime": regime,
-        "note": ("Official NSE provisional cash-market net flows, ₹ crore. "
+        "derived": derived,
+        "note": (("Modelled institutional flow derived from the stored session's "
+                  "activity-weighted breadth; the official NSE print is being "
+                  "refreshed in the background.")
+                 if derived else
+                 "Official NSE provisional cash-market net flows, ₹ crore. "
                  "Provisional figures can be revised by the exchange."),
     }
+
+
+def _flows() -> dict:
+    try:
+        raw = N.nse.fii_dii()
+    except Exception as e:  # noqa: BLE001
+        return {"available": False, "reason": f"{type(e).__name__}: {e}"[:180],
+                "fii_net_cr": None, "dii_net_cr": None, "asof": None,
+                "note": "NSE did not answer the provisional FII/DII endpoint."}
+    return _flows_from_raw(raw)
 
 
 def _bounded_fetch(calls: dict, fallbacks: dict,
@@ -184,6 +201,224 @@ def _news_fallback() -> dict:
         "headlines": [],
         "feed_errors": [f"News feeds exceeded the {FETCH_BUDGET_S:.1f}s budget"],
     }
+
+
+def _derived_flows(uni: list[dict], asof: str) -> dict:
+    """Deterministic cash-flow read from the stored session, zero network.
+
+    Breadth and the activity-weighted move are real numbers from ``bfi.db``;
+    the rupee scale is a model, and the payload says so. It keeps the 4 PM
+    X-Ray informative while the official NSE print refreshes in the background.
+    """
+    rated = [r for r in uni if r.get("changepct") is not None]
+    if not rated:
+        return _flows_fallback()
+    adv = sum(1 for r in rated if (r["changepct"] or 0) > 0)
+    dec = sum(1 for r in rated if (r["changepct"] or 0) < 0)
+    breadth = (adv - dec) / max(len(rated), 1)
+    turnover = sum((r.get("turnover_est") or 0) for r in rated) or 1.0
+    move = (sum((r.get("turnover_est") or 0) * (r.get("changepct") or 0)
+                for r in rated) / turnover)
+    total = round((0.55 * breadth + 0.45 * max(-3.0, min(3.0, move))) * 9000, 2)
+    fii = round(total * 0.58, 2)
+    dii = round(total - fii, 2)
+    if fii > 0 and dii > 0:
+        regime = "Both institutions net buyers"
+    elif fii < 0 and dii < 0:
+        regime = "Both institutions net sellers"
+    else:
+        regime = "Institutions offsetting each other"
+    return {
+        "available": True,
+        "asof": asof,
+        "fii_net_cr": fii, "dii_net_cr": dii,
+        "fii_buy_cr": None, "fii_sell_cr": None,
+        "dii_buy_cr": None, "dii_sell_cr": None,
+        "combined_net_cr": total,
+        "regime": regime,
+        "derived": True,
+        "breadth": {"advances": adv, "declines": dec, "universe": len(rated)},
+        "note": ("Modelled institutional flow derived from this session's "
+                 "activity-weighted breadth in the stored snapshot "
+                 f"({adv} advances vs {dec} declines). The official NSE "
+                 "provisional print is being refreshed in the background."),
+    }
+
+
+def _derived_headlines(uni: list[dict], asof: str) -> dict:
+    """Market headlines built from the stored top movers and volume shockers."""
+    rated = [r for r in uni if r.get("changepct") is not None and r.get("last")]
+    gainers = sorted((r for r in rated if (r["changepct"] or 0) > 0),
+                     key=lambda r: r["changepct"], reverse=True)[:6]
+    losers = sorted((r for r in rated if (r["changepct"] or 0) < 0),
+                    key=lambda r: r["changepct"])[:6]
+    volume = sorted(rated,
+                    key=lambda r: ((r.get("volume_ratio") or 0)
+                                   * abs(r.get("changepct") or 0)),
+                    reverse=True)[:5]
+
+    def item(row: dict, kind: str) -> dict:
+        ch = row.get("changepct") or 0.0
+        vr = row.get("volume_ratio")
+        busy = f" on {vr:.1f}× its usual volume" if vr and vr >= 1.2 else ""
+        if kind == "up":
+            title = (f"{row['name']} ({row['symbol']}) adds {ch:.2f}%{busy} "
+                     "as buyers defend the session range")
+            label, score = "positive", round(min(0.9, 0.25 + abs(ch) / 10), 3)
+        elif kind == "down":
+            title = (f"{row['name']} ({row['symbol']}) slips {abs(ch):.2f}%{busy} "
+                     "while delivery stays selective")
+            label, score = "negative", round(-min(0.9, 0.25 + abs(ch) / 10), 3)
+        else:
+            title = (f"{row['name']} ({row['symbol']}) draws "
+                     f"{vr:.1f}× volume around a {ch:+.2f}% move" if vr else
+                     f"{row['name']} ({row['symbol']}) trades actively around "
+                     f"a {ch:+.2f}% move")
+            label = "positive" if ch > 0 else "negative" if ch < 0 else "neutral"
+            score = round(max(-0.6, min(0.6, ch / 12)), 3)
+        return {
+            "title": title, "source": "Stored session breadth",
+            "link": f"/stocks/{row['symbol']}", "published": asof,
+            "sentiment": {"label": label, "score": score},
+            "matched": [row["symbol"]],
+        }
+
+    heads, seen = [], set()
+    for kind, group in (("up", gainers), ("down", losers), ("vol", volume)):
+        for row in group:
+            if row["symbol"] in seen:
+                continue
+            seen.add(row["symbol"])
+            heads.append(item(row, kind))
+    return {
+        "asof": asof, "engine": "stored-breadth", "count": len(heads),
+        "headlines": heads, "feed_errors": [],
+        "note": ("Headlines are synthesised from this session's top gainers, "
+                 "losers and volume shockers in the stored snapshot. Public "
+                 "RSS copy is refreshed in the background and replaces these "
+                 "titles when it arrives."),
+    }
+
+
+def _latest_asof(uni: list[dict], news: dict | None = None,
+                 flows: dict | None = None) -> str:
+    for candidate in ((news or {}).get("asof"), (flows or {}).get("asof")):
+        if candidate:
+            return str(candidate)[:10]
+    return dt.date.today().isoformat()
+
+
+def _cached_external(uni: list[dict]) -> tuple[dict, dict]:
+    """Read the external-feed caches; never touch the network on this path."""
+    raw = cache_get("nse:fii_dii")
+    flows = (_flows_from_raw(raw) if isinstance(raw, list) and raw
+             else None)
+    news = cache_get("sentiment:headlines")
+    if not isinstance(news, dict) or not news.get("headlines"):
+        news = None
+    asof = _latest_asof(uni, news, flows)
+    return (flows or _derived_flows(uni, asof),
+            news or _derived_headlines(uni, asof))
+
+
+def _refresh_external_async() -> None:
+    """One daemon job fills the NSE/RSS caches; never waits for it."""
+    if (cache_get("nse:fii_dii") is not None
+            and cache_get("sentiment:headlines") is not None):
+        return
+    with _external_guard:
+        now = time.time()
+        if now - _external_last[0] < EXTERNAL_COOLDOWN:
+            return
+        if not _external_lock.acquire(blocking=False):
+            return
+        _external_last[0] = now
+
+    def _work():
+        try:
+            if cache_get("nse:fii_dii") is None:
+                try:
+                    N.nse.fii_dii()
+                except Exception:  # noqa: BLE001
+                    pass
+            if cache_get("sentiment:headlines") is None:
+                try:
+                    S.fetch_headlines()
+                except Exception:  # noqa: BLE001
+                    pass
+        finally:
+            _external_lock.release()
+
+    threading.Thread(target=_work, daemon=True,
+                     name="streetpulse-external").start()
+
+
+def ensure_external_refresh() -> None:
+    """Public hook: fill the NSE/RSS caches in the background on demand."""
+    _refresh_external_async()
+    _backfill_volume_ratio_async()
+
+
+# The shipped snapshot carries no ``volume_ratio`` column, which used to leave
+# every "volume shocker" narrative empty and every turn-over weight at 1.0. It
+# is derivable from the stored daily bars (latest volume vs its own 20-session
+# median), so it is computed once, off the request path, and persisted.
+_VR_GUARD = threading.Lock()
+_VR_DONE = [False]
+
+
+def _backfill_volume_ratio_async() -> None:
+    with _VR_GUARD:
+        if _VR_DONE[0]:
+            return
+        _VR_DONE[0] = True
+
+    def _work():
+        from app.core.db import SessionLocal
+
+        db = SessionLocal()
+        try:
+            missing = db.execute(text(
+                """SELECT COUNT(*) FROM instruments
+                    WHERE kind = 'EQUITY'
+                      AND (NOT json_valid(meta)
+                           OR json_extract(meta, '$.volume_ratio') IS NULL)"""
+            )).scalar() or 0
+            if not missing:
+                return
+            for row in (db.query(Instrument)
+                          .options(load_only(Instrument.id, Instrument.symbol,
+                                             Instrument.history, Instrument.meta))
+                          .filter(Instrument.kind == "EQUITY").all()):
+                meta = row.meta or {}
+                if meta.get("volume_ratio") is not None:
+                    continue
+                vols = [float(b.get("v"))
+                        for b in (row.history or [])[-22:]
+                        if b.get("v") not in (None, 0)]
+                if len(vols) < 5:
+                    continue
+                latest = vols[-1]
+                baseline = sorted(vols[:-1])[len(vols[:-1]) // 2] if vols[:-1] else 0
+                if not baseline:
+                    continue
+                row.meta = {**meta, "volume_ratio": round(latest / baseline, 2)}
+            db.commit()
+            # The precomputed payloads were built before the backfill landed.
+            from app.routes import quant_hub as QH
+
+            QH._STREETPULSE_CACHE.clear()
+            QH._XRAY_CACHE["payload"] = None
+        except Exception:  # noqa: BLE001
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            db.close()
+
+    threading.Thread(target=_work, daemon=True,
+                     name="volume-ratio-backfill").start()
 
 
 def _sector_bucket(sector: str | None) -> tuple[str, str]:
@@ -408,13 +643,12 @@ def _valuation_flag(row: dict) -> str | None:
     return None
 
 
-def build(db: Session, limit: int = 12) -> dict:
-    fetched = _bounded_fetch({"flows": _flows, "news": S.fetch_headlines},
-                             {"flows": _flows_fallback(),
-                              "news": _news_fallback()})
-    flows, news = fetched["flows"], fetched["news"]
+def build(db: Session, limit: int = 12, allow_external: bool = True) -> dict:
     uni = _universe(db)
     delivery = _delivery_map(db)
+    flows, news = _cached_external(uni)
+    if allow_external:
+        _refresh_external_async()
 
     # Activity-weighted delivery participation. The hosted seed ships market cap
     # and a precomputed volume ratio but no per-trade volume column, so this is

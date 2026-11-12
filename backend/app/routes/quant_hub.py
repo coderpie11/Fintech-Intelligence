@@ -52,38 +52,73 @@ def rangecast_workspace(symbol: str,
 
 
 # --------------------------------------------------------------- StreetPulse
-_STREETPULSE_CACHE: dict = {"at": 0.0, "limit": None, "payload": None}
+_STREETPULSE_CACHE: dict[int, dict] = {}
+_STREETPULSE_TTL = 120.0
+
+
+def streetpulse_payload(db: Session, limit: int) -> dict:
+    """Build-or-serve one limit's payload, with a last-good fallback."""
+    import time as _t
+
+    now = _t.time()
+    hit = _STREETPULSE_CACHE.get(limit)
+    if hit is not None and now - float(hit.get("at") or 0) < _STREETPULSE_TTL:
+        # Data is served instantly from SQLite; the NSE/RSS feeds are filled on
+        # the next background pass so the request itself never touches network.
+        streetpulse.ensure_external_refresh()
+        return hit["payload"]
+    try:
+        payload = streetpulse.build(db, limit=limit, allow_external=True)
+    except Exception:  # noqa: BLE001
+        if hit is not None:
+            return hit["payload"]
+        raise
+    _STREETPULSE_CACHE[limit] = {"at": now, "payload": payload}
+    return payload
+
+
+def prewarm_streetpulse(db: Session) -> None:
+    """Precompute the two payloads the 4 PM workspace opens with.
+
+    Startup warm-up must stay network-free, so the external refresher is muted
+    here; first visitor requests fill the feeds in the background.
+    """
+    import time as _t
+
+    for limit in (12, 24):
+        try:
+            payload = streetpulse.build(db, limit=limit, allow_external=False)
+            _STREETPULSE_CACHE[limit] = {"at": _t.time(), "payload": payload}
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @router.get("/streetpulse")
 def streetpulse_workspace(limit: int = Query(12, ge=4, le=30),
                           db: Session = Depends(get_db)):
-    """Serve the 4 PM workspace from a short-lived cache.
+    """Serve the 4 PM workspace from SQLite only — never the network.
 
-    The chain reads NSE sector flows and a news feed, so a cold rebuild takes
-    tens of seconds. Caching per `limit` keeps the pills responsive (a click
-    is just another limit) and falls back to the last good payload if a
-    rebuild fails.
+    Both default limits are precomputed at startup; any other limit rebuilds
+    once and is cached for two minutes. A rebuild failure returns the last
+    good payload instead of a 500.
     """
-    import time as _t
-
-    now = _t.time()
-    cached = _STREETPULSE_CACHE.get("payload")
-    same = _STREETPULSE_CACHE.get("limit") == limit
-    if cached is not None and same and now - float(_STREETPULSE_CACHE.get("at") or 0) < 120:
-        return cached
-    try:
-        payload = streetpulse.build(db, limit=limit)
-    except Exception:  # noqa: BLE001
-        if cached is not None and same:
-            return cached
-        raise
-    _STREETPULSE_CACHE.update({"at": now, "limit": limit, "payload": payload})
-    return payload
+    return streetpulse_payload(db, limit)
 
 
 # -------------------------------------------------------------------- X-Ray
 _XRAY_CACHE: dict = {"at": 0.0, "payload": None}
+
+
+def prewarm_xray(db: Session) -> None:
+    """Precompute the post-market X-Ray payload from SQLite at startup."""
+    import time as _t
+
+    try:
+        payload = xray.build(db)
+    except Exception:  # noqa: BLE001
+        return
+    _XRAY_CACHE["at"] = _t.time()
+    _XRAY_CACHE["payload"] = payload
 
 
 @router.get("/xray")

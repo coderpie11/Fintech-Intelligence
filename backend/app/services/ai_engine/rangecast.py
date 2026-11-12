@@ -23,11 +23,14 @@ from __future__ import annotations
 
 import math
 import statistics
+import threading
+import time
 from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import cache_get
 from app.data.adapters import nse_adapter as N
 from app.models.models import DeliveryStat, Instrument
 from app.services import calc, fuzzy
@@ -96,6 +99,29 @@ def _log_returns(closes: list[float]) -> list[float]:
             if closes[i - 1] > 0 and closes[i] > 0]
 
 
+def _stdev(vals: list[float]) -> float:
+    """Sample standard deviation in plain floats.
+
+    ``statistics.stdev`` computes through exact Fractions, which costs more
+    than the whole rest of the band calculation when it is called once per
+    point of a 20-day rolling window.
+    """
+    n = len(vals)
+    if n < 2:
+        return 0.0
+    mean = sum(vals) / n
+    var = sum((v - mean) ** 2 for v in vals) / (n - 1)
+    return math.sqrt(var) if var > 0 else 0.0
+
+
+def _pvariance(vals: list[float]) -> float:
+    n = len(vals)
+    if not n:
+        return 0.0
+    mean = sum(vals) / n
+    return sum((v - mean) ** 2 for v in vals) / n
+
+
 def _daily_sigma(closes: list[float], window: int = 252,
                  min_obs: int = 30) -> float | None:
     """Volatility estimate that survives single-day gaps and regime shifts.
@@ -110,7 +136,7 @@ def _daily_sigma(closes: list[float], window: int = 252,
     rets = _winsorised(_log_returns(tail))
     if len(rets) < min_obs:
         return None
-    simple = statistics.stdev(rets)
+    simple = _stdev(rets)
     ewma = _ewma_sigma(rets)
     if ewma is None:
         return simple
@@ -130,7 +156,7 @@ def _winsorised(rets: list[float], lo: float = 0.025,
 def _ewma_sigma(rets: list[float], lam: float = 0.94) -> float | None:
     if len(rets) < 20:
         return None
-    var = statistics.pvariance(rets[:20])
+    var = _pvariance(rets[:20])
     for r in rets[20:]:
         var = lam * var + (1 - lam) * r * r
     return math.sqrt(var) if var > 0 else None
@@ -159,22 +185,8 @@ def _rolling_sigma(closes: list[float], window: int = 20) -> list[float | None]:
     return out
 
 
-def _option_walls(row: Instrument) -> dict:
-    """Live OI walls from NSE's free chain, or an explicit unavailability."""
-    key = FNO_INDEX_KEY.get(row.symbol, row.symbol)
-    try:
-        if row.kind == "INDEX":
-            raw = N.nse.index_option_chain(key)
-            chain = _chain_rows(raw)
-        else:
-            raw = N.nse.equity_option_chain(key)
-            chain = _chain_rows(raw)
-    except Exception as e:  # noqa: BLE001
-        return {"available": False, "reason": f"{type(e).__name__}: {e}"[:180],
-                "support": [], "resistance": [], "pcr": None,
-                "note": ("The free NSE option chain did not answer for this "
-                         "contract. Open-interest walls are therefore not shown "
-                         "rather than estimated.")}
+def _walls_from_raw(raw: dict) -> dict:
+    chain = _chain_rows(raw)
     spot = chain["spot"]
     rows = chain["rows"]
     if not spot or not rows:
@@ -207,6 +219,56 @@ def _option_walls(row: Instrument) -> dict:
         "note": ("Largest live open-interest strikes from the NSE chain. "
                  "Open interest is outstanding positioning, not a promise that "
                  "price stops there."),
+    }
+
+
+_walls_guard = threading.Lock()
+_walls_lock = threading.Lock()
+_walls_last: dict[str, float] = {}
+WALLS_COOLDOWN = 300.0
+
+
+def _refresh_walls_async(row: Instrument, key: str, cache_key: str) -> None:
+    """Fill the option chain in the background; never block the request."""
+    with _walls_guard:
+        now = time.monotonic()
+        if now - _walls_last.get(cache_key, 0.0) < WALLS_COOLDOWN:
+            return
+        _walls_last[cache_key] = now
+
+    def _work():
+        if not _walls_lock.acquire(blocking=False):
+            return
+        try:
+            if row.kind == "INDEX":
+                N.nse.index_option_chain(key)
+            else:
+                N.nse.equity_option_chain(key)
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            _walls_lock.release()
+
+    threading.Thread(target=_work, daemon=True,
+                     name=f"rangecast-oi-{key[:16]}").start()
+
+
+def _option_walls(row: Instrument) -> dict:
+    """OI walls from the in-process cache, with a background fill on a miss."""
+    key = FNO_INDEX_KEY.get(row.symbol, row.symbol)
+    cache_key = (f"nse:opt:{key}:nearest" if row.kind == "INDEX"
+                 else f"nse:optstk:{key}:nearest")
+    raw = cache_get(cache_key)
+    if isinstance(raw, dict) and raw:
+        return _walls_from_raw(raw)
+    _refresh_walls_async(row, key, cache_key)
+    return {
+        "available": False, "pending": True,
+        "reason": "option chain is warming in the background",
+        "support": [], "resistance": [], "pcr": None,
+        "note": ("The statistical bands are complete. Open-interest walls are "
+                 "being fetched from the free NSE chain in the background and "
+                 "will appear on the next refresh; they are never estimated."),
     }
 
 
@@ -326,14 +388,9 @@ def build(db: Session, symbol: str, horizon_days: int = 7) -> dict:
     row, kind = _resolve(db, symbol)
     if row is None:
         raise LookupError(f"{symbol} is not in the tracked equity/index universe.")
-    # Self-heal on demand: any listed instrument gets its quote, 52-week range
-    # and daily series repaired before the band is computed.
-    try:
-        from app.services import instrument_engine as IE
-
-        IE.ensure_instrument_ready(db, row)
-    except Exception:  # noqa: BLE001
-        pass
+    # Everything below is arithmetic on the stored daily series: no provider
+    # round-trip on the request path. A missing quote is repaired by the
+    # background refresher, never by making the caller wait.
     hist = [h for h in (row.history or []) if h.get("c") is not None]
     closes = [float(h["c"]) for h in hist]
     spot = _spot(row)

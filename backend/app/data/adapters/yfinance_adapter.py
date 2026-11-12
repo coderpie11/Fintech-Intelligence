@@ -161,11 +161,14 @@ def live_sessions(ticker: str, period: str = "5d", interval: str = "5m") -> list
 
 
 def live_sessions_batch(tickers: list[str], period: str = "5d",
-                        interval: str = "5m", chunk: int = 25) -> dict[str, list[dict]]:
+                        interval: str = "5m", chunk: int = 25,
+                        timeout: float | None = 3.5) -> dict[str, list[dict]]:
     """Batch live sessions for screener/indices/home lists.
 
     Cached per ticker for 15 seconds. Only cache misses are downloaded, in
-    chunks, so overlapping list pages reuse the same work.
+    chunks, so overlapping list pages reuse the same work. ``timeout`` is the
+    hard socket budget passed to yfinance: a throttled datacenter IP fails fast
+    instead of hanging a worker for a minute.
     """
     pd, yf = _libs()
     uniq = list(dict.fromkeys(_ticker(t) for t in tickers if t))
@@ -179,10 +182,19 @@ def live_sessions_batch(tickers: list[str], period: str = "5d",
             missing.append(t)
 
     def fetch(batch: list[str]):
+        kwargs = dict(period=period, interval=interval, group_by="ticker",
+                      progress=False, threads=True, auto_adjust=False)
+        if timeout:
+            kwargs["timeout"] = timeout
         try:
-            return yf.download(batch, period=period, interval=interval,
-                               group_by="ticker", progress=False, threads=True,
-                               auto_adjust=False)
+            return yf.download(batch, **kwargs)
+        except TypeError:
+            # Older yfinance builds do not accept ``timeout``.
+            kwargs.pop("timeout", None)
+            try:
+                return yf.download(batch, **kwargs)
+            except Exception:  # noqa: BLE001
+                return None
         except Exception:  # noqa: BLE001
             return None
 

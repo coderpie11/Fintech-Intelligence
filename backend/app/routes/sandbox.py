@@ -16,12 +16,13 @@ Nothing here touches a broker or a real exchange order book.
 from __future__ import annotations
 
 from datetime import datetime
+import threading
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.core.config import FREE_SOURCE_NOTE
+from app.core.config import FREE_SOURCE_NOTE, cache_get
 from app.core.db import get_db
 from app.data.adapters import nse_adapter as N
 from app.models.models import Instrument, SandboxOrder, WatchItem
@@ -185,14 +186,46 @@ def _underlying_spot(underlying: str, db: Session) -> float | None:
     return _instrument_mark(row) if row else None
 
 
+_fno_keys = {}
+_chain_guard = threading.Lock()
+
+
 def _chain(underlying: str) -> dict | None:
-    """Live option chain for one underlying, cached by the NSE adapter."""
+    """Option chain from the adapter cache only — never a request-path fetch.
+
+    A cold chain returns ``None`` and warms in the background, so an equity
+    quote or a portfolio page never waits on NSE. Derivative marks fall back to
+    their entry premium, which is stated explicitly in the response.
+    """
     u = _fno_key(underlying)
-    try:
-        raw = (N.nse.index_option_chain(u) if u in FNO_INDEX_KEYS
-               else N.nse.equity_option_chain(u))
-    except Exception:  # noqa: BLE001
+    key = (f"nse:opt:{u}:nearest" if u in FNO_INDEX_KEYS
+           else f"nse:optstk:{u}:nearest")
+    raw = cache_get(key)
+    if not isinstance(raw, dict) or not raw:
+        _warm_chain(u)
         return None
+    return _chain_from_raw(raw)
+
+
+def _warm_chain(u: str) -> None:
+    if not _chain_guard.acquire(blocking=False):
+        return
+
+    def _work():
+        try:
+            if u in FNO_INDEX_KEYS:
+                N.nse.index_option_chain(u)
+            else:
+                N.nse.equity_option_chain(u)
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            _chain_guard.release()
+
+    threading.Thread(target=_work, daemon=True, name=f"chain-{u[:14]}").start()
+
+
+def _chain_from_raw(raw: dict) -> dict | None:
     rec = raw.get("records") or {}
     rows = []
     for leg in ((raw.get("filtered") or {}).get("data") or []):
@@ -202,6 +235,8 @@ def _chain(underlying: str) -> dict | None:
             "ce_ltp": (leg.get("CE") or {}).get("lastPrice"),
             "pe_ltp": (leg.get("PE") or {}).get("lastPrice"),
         })
+    if not rows:
+        return None
     return {"spot": rec.get("underlyingValue"), "rows": rows}
 
 

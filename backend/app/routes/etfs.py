@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -52,28 +53,90 @@ _ETF_FEED_TTL = 180
 def _quote_map() -> dict[str, dict]:
     """One NSE /api/etf snapshot, cached for every ETF card on the desk.
 
-    The feed covers the whole curated universe, so re-fetching it per request
-    only adds seconds to first paint. Outside the session the stored snapshot
-    is already the final print, and the cache keeps it served instantly.
+    The live feed is never allowed to block a request: a cache hit is served
+    immediately, and a cold cache returns ``{}`` (stored snapshots fill every
+    card) while a single daemon thread warms the feed in the background.
     """
     cached = cache_get("nse:etf_list")
     if cached is not None:
         return cached
-    try:
-        rows = N.nse.etf_list()
-    except Exception:  # noqa: BLE001
-        return {}
-    live = {str(r.get("symbol") or "").upper(): r for r in rows}
-    if live:
-        cache_set("nse:etf_list", live, ttl=_ETF_FEED_TTL)
-    return live
+    _refresh_quote_map()
+    return {}
+
+
+_quote_guard = threading.Lock()
+
+
+def _refresh_quote_map() -> None:
+    if not _quote_guard.acquire(blocking=False):
+        return
+
+    def _work():
+        try:
+            try:
+                rows = N.nse.etf_list()
+            except Exception:  # noqa: BLE001
+                rows = {}
+            live = {str(r.get("symbol") or "").upper(): r for r in rows} if rows else {}
+            if live:
+                cache_set("nse:etf_list", live, ttl=_ETF_FEED_TTL)
+        finally:
+            _quote_guard.release()
+
+    threading.Thread(target=_work, daemon=True,
+                     name="etf-quote-map").start()
 
 
 def _history(symbol: str) -> list[dict]:
-    try:
-        return Y.history(f"{symbol}.NS", "5y")
-    except Exception:  # noqa: BLE001
-        return []
+    """Never block a request on Yahoo: serve the cache or warm it in the
+    background and let the caller fall back to the stored snapshot."""
+    return _cached_history(f"{symbol}.NS", "5y")
+
+
+_hist_guard = threading.Lock()
+_hist_pending: set[str] = set()
+# History-derived row metrics, keyed by (symbol, series length, last date).
+_ROW_METRIC_CACHE: dict[tuple, dict] = {}
+# Cleaned benchmark series, keyed by benchmark symbol (shared by every ETF).
+_BENCH_CACHE: dict[str, tuple[list[dict], dict]] = {}
+
+
+def _history_key(ticker: str, period: str) -> str:
+    today = (dt.datetime.utcnow() + dt.timedelta(hours=5, minutes=30)).date()
+    return f"yf:{ticker}:{period}:{today}"
+
+
+def _history_warm(ticker: str, period: str) -> None:
+    key = _history_key(ticker, period)
+    if not _hist_guard.acquire(blocking=False):
+        return
+    if key in _hist_pending:
+        _hist_guard.release()
+        return
+    _hist_pending.add(key)
+    _hist_guard.release()
+
+    def _work():
+        try:
+            Y.history(ticker, period)
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            _hist_pending.discard(key)
+
+    threading.Thread(target=_work, daemon=True,
+                     name=f"yf-hist-{ticker[:20]}").start()
+
+
+def _cached_history(ticker: str, period: str = "5y",
+                    warm: bool = True) -> list[dict]:
+    """Cache-first history read for routes; never a synchronous download."""
+    hit = cache_get(_history_key(ticker, period))
+    if hit is not None:
+        return hit
+    if warm:
+        _history_warm(ticker, period)
+    return []
 
 
 def _clean_navs(rows: list[dict]) -> list[dict]:
@@ -110,10 +173,19 @@ def _clean_history(hist: list[dict]) -> list[dict]:
 
 
 def _benchmark(db: Session, spec: dict) -> tuple[list[dict], dict]:
+    """Benchmark series for one ETF, memoised for the life of the process.
+
+    The 51 ETFs share a handful of benchmarks, and loading an index row pulls
+    its multi-year JSON column. Caching the cleaned series turns 51 deserials
+    into one per distinct index.
+    """
     bench = spec.get("benchmark")
     if not bench or spec.get("no_bench"):
         return [], {"symbol": None, "name": None,
                     "note": "No honest free benchmark series exists for this ETF."}
+    hit = _BENCH_CACHE.get(bench)
+    if hit is not None:
+        return hit
     if bench in ("GOLD_INR_PROXY", "SILVER_INR_PROXY"):
         return [], {"symbol": None, "name": None,
                     "note": ("No reliable free domestic bullion benchmark exists here. "
@@ -121,19 +193,20 @@ def _benchmark(db: Session, spec: dict) -> tuple[list[dict], dict]:
                              "different time zone, so a tracking error computed against them "
                              "would be misleading rather than informative.")}
     if bench == "NASDAQ100":
-        try:
-            h = Y.history("^NDX", "5y")
-            return (_clean_navs([{"date": x.get("date"), "c": x.get("c")} for x in h]),
-                    {"symbol": "^NDX", "name": "Nasdaq 100", "proxy": False})
-        except Exception:  # noqa: BLE001
-            return [], {"symbol": None, "name": None,
-                        "note": "Nasdaq 100 series was unavailable."}
+        h = _cached_history("^NDX", "5y")
+        got = (_clean_navs([{"date": x.get("date"), "c": x.get("c")} for x in h]),
+               {"symbol": "^NDX", "name": "Nasdaq 100", "proxy": False})
+        if got[0]:
+            _BENCH_CACHE[bench] = got
+        return got
     row = (db.query(Instrument).filter_by(kind="INDEX", symbol=bench).one_or_none())
     if row and row.history:
-        return (_clean_navs([{"date": h.get("date"), "c": h.get("c")} for h in row.history]),
-                {"symbol": bench, "name": bench, "proxy": bool(spec.get("proxy")),
-                 "note": ("This is an approximate benchmark, not the ETF's exact "
-                          "underlying index." if spec.get("proxy") else None)})
+        got = (_clean_navs([{"date": h.get("date"), "c": h.get("c")} for h in row.history]),
+               {"symbol": bench, "name": bench, "proxy": bool(spec.get("proxy")),
+                "note": ("This is an approximate benchmark, not the ETF's exact "
+                         "underlying index." if spec.get("proxy") else None)})
+        _BENCH_CACHE[bench] = got
+        return got
     return [], {"symbol": None, "name": None,
                 "note": f"Benchmark {bench} is not seeded."}
 
@@ -234,17 +307,34 @@ def _inav_block(db: Session | None, spec: dict, ltp: float | None,
 
 def _row(symbol: str, spec: dict, q: dict, hist: list[dict],
          db: Session | None = None) -> dict:
+    # The return ladder is a function of the stored series alone, so it is
+    # memoised per symbol keyed on the series length and last date. Only the
+    # quote-dependent fields are recomputed on each request.
+    sig = (symbol, len(hist), hist[-1].get("date") if hist else None)
+    cached = _ROW_METRIC_CACHE.get(sig)
+    if cached is None:
+        navs = _navs(hist)
+        last_bar = hist[-1] if hist else {}
+        window = hist[-252:] if hist else []
+        cached = {
+            "rets": calc.nav_returns(navs),
+            "wkhi": max(h["c"] for h in window) if window else None,
+            "wklo": min(h["c"] for h in window) if window else None,
+            "last": last_bar,
+        }
+        if len(_ROW_METRIC_CACHE) > 400:
+            _ROW_METRIC_CACHE.clear()
+        _ROW_METRIC_CACHE[sig] = cached
+    rets = cached["rets"]
+    last = cached["last"]
     ltp = _num(q.get("ltP")) or (hist[-1]["c"] if hist else None)
     nav = _num(q.get("nav")) or (hist[-1]["c"] if hist else None)
     prev = _num(q.get("prevClose")) or (hist[-2]["c"] if len(hist) > 1 else None)
     chg = ((ltp / prev - 1) * 100 if ltp and prev else
            _num(q.get("per")))
-    rets = calc.nav_returns(_navs(hist))
     liq = _impact_and_liquidity(q, ltp)
-    last = hist[-1] if hist else {}
-    window = hist[-252:] if hist else []
-    wkhi = _num(q.get("wkhi")) or (max(h["c"] for h in window) if window else None)
-    wklo = _num(q.get("wklo")) or (min(h["c"] for h in window) if window else None)
+    wkhi = _num(q.get("wkhi")) or cached["wkhi"]
+    wklo = _num(q.get("wklo")) or cached["wklo"]
     volume = liq["volume"] or (_num(last.get("v")) or None)
     turnover_cr = liq["turnover_cr"]
     impact = liq["impact_cost_pct"]
@@ -310,6 +400,12 @@ def list_etfs(db: Session = Depends(get_db)):
     when that single feed call succeeds; missing history falls back to the
     deterministic series in ``universe.py`` and is labelled as modelled."""
     qmap = _quote_map()
+    # The list is pure read-only arithmetic over the stored snapshots. A short
+    # cache keeps repeat visits in the low tens of milliseconds.
+    payload_key = f"etfs:list:{len(qmap)}"
+    cached = cache_get(payload_key)
+    if cached is not None:
+        return cached
     stored = _stored_map(db)
     IE.ensure_many(db, stored.values())
     out = []
@@ -342,7 +438,15 @@ def list_etfs(db: Session = Depends(get_db)):
                 row["returns"][key] = _env(value, f"{key.upper()} return")
 
         bench, _bench_meta = _benchmark(db, spec)
-        te = calc.tracking_error(_navs(hist), bench) if bench else None
+        te = None
+        if bench:
+            te_key = ("te", sym, len(hist),
+                      hist[-1].get("date") if hist else None)
+            if te_key in _ROW_METRIC_CACHE:
+                te = _ROW_METRIC_CACHE[te_key]
+            else:
+                te = calc.tracking_error(_navs(hist), bench)
+                _ROW_METRIC_CACHE[te_key] = te
         if te is None:
             te = fb.get("tracking_error_pct")
         row["tracking_error_pct"] = _env(te, "tracking error")
@@ -352,12 +456,14 @@ def list_etfs(db: Session = Depends(get_db)):
             else "Modelled fallback")
         out.append(row)
     out.sort(key=lambda x: -(x["turnover_cr"]["value"] or 0))
-    return {"count": len(out), "etfs": out,
-            "quote_feed": "NSE /api/etf (live/delayed)" if qmap else "Stored / modelled fallback",
-            "universe_note": ("51 curated NSE-listed ETFs across silver, gold, Nifty, "
-                              "Sensex, sectoral, PSU, international and debt buckets. "
-                              "Live NSE quotes overlay stored snapshots; rows marked "
-                              "modelled are clearly labelled fallback values.")}
+    payload = {"count": len(out), "etfs": out,
+               "quote_feed": "NSE /api/etf (live/delayed)" if qmap else "Stored / modelled fallback",
+               "universe_note": ("51 curated NSE-listed ETFs across silver, gold, Nifty, "
+                                 "Sensex, sectoral, PSU, international and debt buckets. "
+                                 "Live NSE quotes overlay stored snapshots; rows marked "
+                                 "modelled are clearly labelled fallback values.")}
+    cache_set(payload_key, payload, ttl=45)
+    return payload
 
 
 @router.get("/liquidity-scan")
@@ -479,49 +585,12 @@ def etf_intraday(symbol: str, interval: str = "2m",
     if not spec:
         raise HTTPException(404, "This ETF is not in the curated NSE universe.")
     rec = (db.query(Instrument).filter_by(kind="ETF", symbol=sym).one_or_none())
-    if rec:
-        IE.ensure_instrument_ready(db, rec)
-    q = _quote_map().get(sym) or {}
-    hist = _history(sym)
-    if not hist and rec:
-        hist = list(rec.history or [])
-    meta = (rec.meta or {}) if rec else {}
-    ltp = _num(q.get("ltP")) or _num(meta.get("lastPrice"))
-    prev = _num(q.get("prevClose")) or _num(meta.get("prevClose")) or (hist[-2]["c"] if len(hist) > 1 else None)
-    try:
-        data = Y.intraday(f"{sym}.NS", interval=interval, period="5d")
-        if len(data.get("points") or []) >= 2:
-            data["points"] = IE.stitch_live_point(
-                data["points"],
-                {"lastPrice": ltp, "live_time": meta.get("live_time"),
-                 "volume": _num(q.get("qty")) or meta.get("volume")})
-            data["last"] = data["points"][-1]["c"]
-            data["prevClose"] = prev
-            if prev:
-                data["change"] = round(data["last"] - prev, 2)
-                data["changepct"] = round((data["last"] / prev - 1) * 100, 2)
-            data["live_source"] = data.get("source")
-            return data
-    except Exception:  # noqa: BLE001
-        pass
-    if len(hist) >= 2:
-        points = [{"datetime": h["date"], "date": h["date"], "time": "15:30",
-                   "o": h.get("o"), "h": h.get("h"), "l": h.get("l"),
-                   "c": h["c"], "v": h.get("v")} for h in hist[-60:]]
-        points = IE.stitch_live_point(
-            points, {"lastPrice": ltp, "live_time": meta.get("live_time")})
-        return {
-            "ticker": f"{sym}.NS", "interval": "1d", "session": hist[-1]["date"],
-            "source": "Yahoo Finance daily candles (intraday feed unavailable)",
-            "points": points,
-            "last": points[-1]["c"], "prevClose": prev,
-            "change": (round(points[-1]["c"] - prev, 2) if prev else None),
-            "changepct": (round((points[-1]["c"] / prev - 1) * 100, 2)
-                          if prev else None),
-            "note": "The intraday feed did not answer; the last 60 daily closes "
-                    "are shown instead of fabricating candles.",
-        }
-    raise HTTPException(503, "No intraday price history available for this ETF yet.")
+    if not rec:
+        raise HTTPException(503, "No intraday price history available for this ETF yet.")
+    IE.ensure_instrument_ready(db, rec)
+    from app.services import instant_intraday as II
+
+    return II.get_intraday(db, rec, f"{sym}.NS", interval=interval)
 
 
 @router.post("/{symbol}/vs-index-fund")

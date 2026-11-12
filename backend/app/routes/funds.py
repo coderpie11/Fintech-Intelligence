@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.config import cache_get, cache_set
 from app.core.db import get_db
 from app.data.adapters import fund_adapter as F
 from app.models.models import CorporateEvent, FundMeta, FundScheme, Instrument
@@ -474,22 +475,19 @@ def list_funds(q: str | None = None, category: str | None = None,
             rows = [r for r in rows if amc.lower() in (r.amc or "").lower()]
         # Relevance order is meaningful; do not re-sort it below.
     else:
-        today = dt.date.today()
-        rows = []
-        for r in query.filter(FundScheme.navs.isnot(None)).all():
-            navs = r.navs or []
-            if len(navs) < 60:
-                continue
-            try:
-                if (today - dt.date.fromisoformat(navs[-1]["date"])).days > 15:
-                    continue
-            except Exception:  # noqa: BLE001
-                continue
-            rows.append(r)
+        rows = _browse_rows(db, kind)
     metas = {m.code: (m.meta or {}) for m in
              db.query(FundMeta).filter(FundMeta.code.in_([r.code for r in rows])).all()} if rows else {}
+    if not q_mode:
+        # Ordering must be decided on the whole set, but measuring returns and
+        # risk for all ~1,300 schemes on every request made this the slowest
+        # route on the desk. AUM is metadata (cheap); a performance sort ranks
+        # by the stored NAV window only, and the page sent is fully measured.
+        rows = _order_browse(rows, metas, sort)
+    start, end = (page - 1) * limit, page * limit
+    visible = rows[start:end]
     items = []
-    for r in rows:
+    for r in visible:
         navs = r.navs or []
         rets = calc.nav_returns(navs)
         meta = metas.get(r.code) or {}
@@ -528,16 +526,85 @@ def list_funds(q: str | None = None, category: str | None = None,
         "name": lambda i: i["name"], "amc": lambda i: i["amc"],
         "aum": lambda i: i["aum_crore"]["value"] or 0,
     }
-    if not q_mode:
-        items.sort(key=sortkeys.get(sort, sortkeys["performance_1y"]),
-                   reverse=(sort not in ("name", "amc")))
-    categories = sorted({i["category"] for i in items if i["category"]})
-    amcs = sorted({i["amc"] for i in items if i["amc"]})[:60]
-    start, end = (page - 1) * limit, page * limit
-    return {"count": len(items), "funds": items[start:end], "page": page,
-            "pages": max((len(items) + limit - 1) // limit, 1),
+    categories = sorted({_category(r, (metas.get(r.code) or {}).get("groww") or {})
+                         for r in rows if r.category})
+    amcs = sorted({r.amc for r in rows if r.amc})[:60]
+    return {"count": len(rows), "funds": items, "page": page,
+            "pages": max((len(rows) + limit - 1) // limit, 1),
             "amcs": amcs, "categories": categories, "sorts": list(sortkeys),
             "query": q, "searched_all_schemes": q_mode}
+
+
+def _browse_rows(db: Session, kind: str) -> list[FundScheme]:
+    """Schemes with at least three months of recent NAVs, memoised briefly.
+
+    Detecting "recent" means reading the tail of every stored NAV series, which
+    is ~36k JSON documents on a cold pass. The result only changes when AMFI
+    publishes, so a five-minute cache makes every repeat browse instant while
+    the first paint of a fresh process stays a single, bounded scan.
+    """
+    key = f"funds:browse-rows:{kind}"
+    cached = cache_get(key)
+    if cached is not None:
+        return cached
+    today = dt.date.today()
+    query = db.query(FundScheme)
+    if kind == "mf":
+        query = query.filter(FundScheme.is_etf.is_(False))
+    elif kind == "etf":
+        query = query.filter(FundScheme.is_etf.is_(True))
+    rows: list[FundScheme] = []
+    for r in query.filter(FundScheme.navs.isnot(None)).all():
+        navs = r.navs or []
+        if len(navs) < 60:
+            continue
+        try:
+            if (today - dt.date.fromisoformat(navs[-1]["date"])).days > 15:
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+        rows.append(r)
+    cache_set(key, rows, ttl=300)
+    return rows
+
+
+def _order_browse(rows: list[FundScheme], metas: dict[str, dict],
+                  sort: str) -> list[FundScheme]:
+    """Order the whole browse set without measuring every scheme.
+
+    * ``aum`` / ``name`` / ``amc`` are metadata lookups, so they sort the full
+      set exactly.
+    * a performance sort ranks on the stored NAV window (one cheap lookup per
+      scheme) and the page sent is then measured in full, so the top of the
+      list is always the right list.
+    """
+    if sort == "name":
+        return sorted(rows, key=lambda r: (r.name or "").lower())
+    if sort == "amc":
+        return sorted(rows, key=lambda r: (r.amc or "").lower())
+    if sort == "aum":
+        def aum(r: FundScheme) -> float:
+            g = (metas.get(r.code) or {}).get("groww") or {}
+            return _numv(g.get("aum_crore"), 0.0) or 0.0
+        return sorted(rows, key=aum, reverse=True)
+    sessions = {"performance_1y": 252, "performance_3y": 756,
+                "performance_5y": 1260}.get(sort, 252)
+
+    def perf(r: FundScheme) -> float:
+        navs = r.navs or []
+        if len(navs) < 2:
+            return -1e9
+        window = navs[-sessions - 1:] if len(navs) > sessions else navs
+        first = _numv((window[0] or {}).get("nav"))
+        last = _numv((window[-1] or {}).get("nav"))
+        if not first or not last:
+            return -1e9
+        years = max(len(window) / 252, 1 / 252)
+        if sessions <= 252:
+            return last / first - 1
+        return (last / first) ** (1 / years) - 1
+
+    return sorted(rows, key=perf, reverse=True)
 
 
 # ---------------------------------------------------------------- detail

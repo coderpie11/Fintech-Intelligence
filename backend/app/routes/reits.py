@@ -79,45 +79,9 @@ def trust_intraday(symbol: str, interval: str = "2m",
     if not row:
         raise HTTPException(404, "This trust is not in the seeded REIT/InvIT universe.")
     IE.ensure_instrument_ready(db, row)
-    hist = row.history or []
-    meta = row.meta or {}
-    prev = meta.get("prevClose") or (hist[-2]["c"] if len(hist) > 1 else None)
-    last_live = meta.get("lastPrice")
-    try:
-        data = Y.intraday(f"{row.symbol}.NS", interval=interval, period="5d")
-        if len(data.get("points") or []) >= 2:
-            data["points"] = IE.stitch_live_point(
-                data["points"],
-                {"lastPrice": last_live, "live_time": meta.get("live_time"),
-                 "volume": meta.get("volume")})
-            data["last"] = data["points"][-1]["c"]
-            data["prevClose"] = prev
-            if prev:
-                data["change"] = round(data["last"] - prev, 2)
-                data["changepct"] = round((data["last"] / prev - 1) * 100, 2)
-            data["live_source"] = data.get("source")
-            return data
-    except Exception:  # noqa: BLE001
-        pass
-    if len(hist) >= 2:
-        points = [{"datetime": h["date"], "date": h["date"], "time": "15:30",
-                   "o": h.get("o"), "h": h.get("h"), "l": h.get("l"),
-                   "c": h["c"], "v": h.get("v")} for h in hist[-60:]]
-        points = IE.stitch_live_point(
-            points, {"lastPrice": last_live, "live_time": meta.get("live_time")})
-        return {
-            "ticker": f"{row.symbol}.NS", "interval": "1d",
-            "session": hist[-1]["date"],
-            "source": "Yahoo Finance daily candles (intraday feed unavailable)",
-            "points": points,
-            "last": points[-1]["c"], "prevClose": prev,
-            "change": (round(points[-1]["c"] - prev, 2) if prev else None),
-            "changepct": (round((points[-1]["c"] / prev - 1) * 100, 2)
-                          if prev else None),
-            "note": "The intraday feed did not answer; the last 60 daily closes "
-                    "are shown instead of fabricating candles.",
-        }
-    raise HTTPException(503, "No intraday price history available for this trust yet.")
+    from app.services import instant_intraday as II
+
+    return II.get_intraday(db, row, f"{row.symbol}.NS", interval=interval)
 
 
 @router.get("/{symbol}")

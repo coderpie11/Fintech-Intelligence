@@ -87,11 +87,15 @@ def _member_pe(m: dict) -> float | None:
 
 def _member_pb(m: dict, db: Session) -> float | None:
     """Weighted harmonic mean of member P/B for the SENSEX fallback."""
+    syms = [c.get("symbol") for c in (m.get("constituents") or []) if c.get("symbol")]
+    peers = ({r.symbol: r for r in
+              (db.query(Instrument).options(defer(Instrument.history))
+                 .filter(Instrument.kind == "EQUITY",
+                         Instrument.symbol.in_(syms)).all())} if syms else {})
     num = den = 0.0
     for c in (m.get("constituents") or []):
         w = c.get("weight") or 0
-        eq = (db.query(Instrument)
-                .filter_by(kind="EQUITY", symbol=c.get("symbol")).one_or_none())
+        eq = peers.get(c.get("symbol"))
         x = ((eq.meta or {}).get("extra") or {}) if eq else {}
         pb = x.get("priceToBook") or c.get("pb")
         try:
@@ -106,11 +110,15 @@ def _member_pb(m: dict, db: Session) -> float | None:
 
 def _member_dy(m: dict, db: Session) -> float | None:
     """Weight-weighted arithmetic mean of member dividend yields."""
+    syms = [c.get("symbol") for c in (m.get("constituents") or []) if c.get("symbol")]
+    peers = ({r.symbol: r for r in
+              (db.query(Instrument).options(defer(Instrument.history))
+                 .filter(Instrument.kind == "EQUITY",
+                         Instrument.symbol.in_(syms)).all())} if syms else {})
     num = den = 0.0
     for c in (m.get("constituents") or []):
         w = c.get("weight") or 0
-        eq = (db.query(Instrument)
-                .filter_by(kind="EQUITY", symbol=c.get("symbol")).one_or_none())
+        eq = peers.get(c.get("symbol"))
         em = (eq.meta or {}) if eq else {}
         x = em.get("extra") or {}
         dy = c.get("dy")
@@ -607,12 +615,26 @@ def index_detail(slug: str, db: Session = Depends(get_db)):
         year_low = min((h.get("l") or h["c"]) for h in tail)
 
     # -------- constituents (enriched from the equity universe) -----------
+    # One query for every member with the multi-year history column deferred:
+    # a per-symbol lookup deserialised the whole of each company's history just
+    # to read a price and a P/E, which dominated the index detail response.
+    member_syms = [c.get("symbol") for c in (m.get("constituents") or [])
+                   if c.get("symbol")]
+    member_rows = {}
+    if member_syms:
+        member_rows = {
+            r.symbol: r for r in
+            (db.query(Instrument)
+               .options(defer(Instrument.history))
+               .filter(Instrument.kind == "EQUITY",
+                       Instrument.symbol.in_(member_syms)).all())
+        }
     constituents = []
     for c in (m.get("constituents") or []):
         sym = c.get("symbol")
         if not sym:
             continue
-        eq = (db.query(Instrument).filter_by(kind="EQUITY", symbol=sym).one_or_none())
+        eq = member_rows.get(sym)
         em = (eq.meta or {}) if eq else {}
         last = em.get("lastPrice") if em.get("lastPrice") is not None else c.get("last")
         ch = em.get("changepct") if em.get("changepct") is not None else c.get("changepct")
@@ -693,50 +715,9 @@ def index_intraday(slug: str, interval: str = "2m", db: Session = Depends(get_db
     if not row:
         raise HTTPException(404, "Index not seeded yet")
     IE.ensure_instrument_ready(db, row)
-    quote = LQ.refresh_one(db, row)
-    ticker = spec.get("yahoo")
-    if ticker:
-        try:
-            data = Y.intraday(ticker, interval=interval, period="5d")
-            if data["points"]:
-                data["points"] = IE.stitch_live_point(data["points"], row.meta)
-                last = data["points"][-1]
-                data["last"] = last["c"]
-                if quote:
-                    data["prevClose"] = quote.get("prevClose")
-                    data["change"] = quote.get("change")
-                    data["changepct"] = quote.get("changepct")
-                    data["asof"] = quote.get("asof")
-                    data["session_date"] = quote.get("session")
-                    data["live_source"] = quote.get("source")
-                else:
-                    first = data["points"][0]
-                    data["changepct"] = (round((last["c"] / first["o"] - 1) * 100, 2)
-                                         if first.get("o") else None)
-                return data
-        except Exception:  # noqa: BLE001
-            pass
-    hist = row.history or []
-    if len(hist) >= 2:
-        tail = hist[-60:]
-        points = [{"datetime": h["date"], "date": h["date"], "time": "15:30",
-                   "o": h.get("o"), "h": h.get("h"), "l": h.get("l"),
-                   "c": h["c"], "v": h.get("v")} for h in tail]
-        points = IE.stitch_live_point(points, row.meta)
-        change = round(hist[-1]["c"] - hist[-2]["c"], 2)
-        return {
-            "ticker": ticker, "interval": "1d", "session": hist[-1]["date"],
-            "source": "Yahoo Finance daily candles (intraday feed unavailable)",
-            "points": points,
-            "last": points[-1]["c"],
-            "prevClose": hist[-2]["c"],
-            "change": change,
-            "changepct": round((hist[-1]["c"] / hist[-2]["c"] - 1) * 100, 2),
-            "asof": (quote or {}).get("asof"),
-            "note": "The intraday feed did not answer; the last 60 daily closes "
-                    "are shown instead of fabricating candles.",
-        }
-    raise HTTPException(503, "No price history available for this index yet.")
+    from app.services import instant_intraday as II
+
+    return II.get_intraday(db, row, spec.get("yahoo"), interval=interval)
 
 
 def _ret(closes: list[float], lookback: int, cagr: bool) -> float | None:

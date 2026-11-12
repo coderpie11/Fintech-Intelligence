@@ -20,10 +20,11 @@ from __future__ import annotations
 import datetime as dt
 import math
 import os
+import threading
 import time
 from typing import Iterable
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.data.adapters import yfinance_adapter as Y
 from app.models.models import Instrument
@@ -334,25 +335,106 @@ def quote_is_current(row: Instrument, ttl: float = LIST_QUOTE_TTL,
     return bool(closed_ok and not market_open())
 
 
+# ------------------------------------------------------- background refresher
+# A Render box has 0.1 vCPU. A synchronous Yahoo/NSE round-trip inside a request
+# therefore starves Uvicorn and was the root cause of 50-120s page loads. Every
+# priced row is now refreshed strictly off the request path, with one job at a
+# time, a hard per-fetch timeout, a small ticker cap and a long cooldown.
+REFRESH_MAX_TICKERS = 15
+REFRESH_TIMEOUT = 3.5
+REFRESH_COOLDOWN = 45.0
+_refresh_guard = threading.Lock()
+_refresh_lock = threading.Lock()
+_refresh_last = [0.0]
+
+
+def has_stored_price(row: Instrument) -> bool:
+    """True when the SQLite snapshot already carries a usable quote."""
+    meta = row.meta or {}
+    last = meta.get("lastPrice") if row.kind != "INDEX" else meta.get("last")
+    if _finite(last) is None:
+        last = meta.get("lastPrice") if meta.get("lastPrice") is not None else meta.get("last")
+    return _finite(last) is not None
+
+
+def background_refresh(rows: Iterable[Instrument]) -> bool:
+    """Queue at most one capped refresh job, never blocking the caller.
+
+    Returns True when a job was actually started. A second request inside the
+    cooldown window is a no-op: the stored snapshot is served instead.
+    """
+    if not live_quotes_enabled():
+        return False
+    keys: list[tuple[str, str]] = []
+    for row in rows:
+        if not has_stored_price(row):
+            continue
+        key = (row.kind, row.symbol)
+        if key not in keys:
+            keys.append(key)
+    keys = keys[:REFRESH_MAX_TICKERS]
+    if not keys:
+        return False
+    with _refresh_guard:
+        now = time.time()
+        if now - _refresh_last[0] < REFRESH_COOLDOWN:
+            return False
+        if not _refresh_lock.acquire(blocking=False):
+            return False
+        _refresh_last[0] = now
+
+    def _worker():
+        from app.core.db import SessionLocal
+
+        db = SessionLocal()
+        try:
+            pairs = keys
+            target = []
+            for kind, symbol in pairs:
+                row = (db.query(Instrument)
+                         .options(defer(Instrument.history))
+                         .filter(Instrument.kind == kind,
+                                 Instrument.symbol == symbol).one_or_none())
+                if row is not None:
+                    target.append(row)
+            if target:
+                _refresh_rows_sync(db, target, commit=True, touch_history=False)
+        except Exception:  # noqa: BLE001
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            db.close()
+            _refresh_lock.release()
+
+    threading.Thread(target=_worker, daemon=True, name="quote-refresh").start()
+    return True
+
+
 def list_rows(db: Session, rows: Iterable[Instrument], *, ttl: float = LIST_QUOTE_TTL,
               cap: int | None = None, touch_history: bool = False) -> dict[str, dict]:
-    """Refresh only the list cards that genuinely need a provider call."""
+    """Paint every card from SQLite and refresh the stale ones in the background.
+
+    The return value stays empty by design: callers keep reading the stored
+    ``meta`` they already have, so a request never waits for a provider.
+    """
     rows = list(rows)
     stale = [r for r in rows if not quote_is_current(r, ttl)]
     if not stale:
         return {}
     if cap is not None and len(stale) > cap:
         stale = stale[:cap]
-    return refresh_rows(db, stale, touch_history=touch_history)
+    background_refresh(stale)
+    return {}
 
 
-def refresh_rows(db: Session, rows: Iterable[Instrument], commit: bool = True,
-                 sync_history: bool = False,
-                 touch_history: bool = True) -> dict[str, dict]:
-    """Reconcile a set of rows against one batch live download."""
+def _refresh_rows_sync(db: Session, rows: list[Instrument], commit: bool = True,
+                       sync_history: bool = False,
+                       touch_history: bool = True) -> dict[str, dict]:
+    """Reconcile rows against one bounded batch download (worker/sync path)."""
     if not live_quotes_enabled():
         return {}
-    rows = list(rows)
     tickers: dict[str, str] = {}
     for row in rows:
         ticker = ticker_for(row)
@@ -363,8 +445,8 @@ def refresh_rows(db: Session, rows: Iterable[Instrument], commit: bool = True,
     changed = False
     if sync_history:
         for row in rows:
-            changed = sync_daily_history(row) or changed
-    frames = Y.live_sessions_batch(list(tickers.values()))
+            changed = sync_history_row(row) or changed
+    frames = Y.live_sessions_batch(list(tickers.values()), timeout=REFRESH_TIMEOUT)
     quotes: dict[str, dict] = {}
     for row in rows:
         ticker = tickers.get(row.symbol)
@@ -380,7 +462,37 @@ def refresh_rows(db: Session, rows: Iterable[Instrument], commit: bool = True,
     return quotes
 
 
+def refresh_rows(db: Session, rows: Iterable[Instrument], commit: bool = True,
+                 sync_history: bool = False,
+                 touch_history: bool = True,
+                 force_sync: bool = False) -> dict[str, dict]:
+    """Never block on a provider for a row that already has a stored price.
+
+    Priced rows go to :func:`background_refresh`; only genuinely unpriced rows
+    (a symbol added after the seed) pay for a bounded synchronous download.
+    """
+    if not live_quotes_enabled():
+        return {}
+    rows = list(rows)
+    if not force_sync:
+        priced = [r for r in rows if has_stored_price(r)]
+        rows = [r for r in rows if not has_stored_price(r)]
+        if priced:
+            background_refresh(priced)
+        if not rows:
+            return {}
+    return _refresh_rows_sync(db, rows, commit=commit,
+                              sync_history=sync_history,
+                              touch_history=touch_history)
+
+
+# ``sync_daily_history`` is the public name used by routes/seeds; keep the alias
+# the worker calls so the module surface does not change.
+sync_history_row = sync_daily_history
+
+
 def refresh_one(db: Session, row: Instrument, commit: bool = True,
-                sync_history: bool = False) -> dict | None:
-    return refresh_rows(db, [row], commit=commit,
-                        sync_history=sync_history).get(row.symbol)
+                sync_history: bool = False,
+                force_sync: bool = False) -> dict | None:
+    return refresh_rows(db, [row], commit=commit, sync_history=sync_history,
+                        force_sync=force_sync).get(row.symbol)

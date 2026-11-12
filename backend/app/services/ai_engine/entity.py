@@ -20,10 +20,15 @@ Nothing is per-ticker: any instrument in the universe is scored the same way.
 from __future__ import annotations
 
 import re
+import threading
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.models.models import Instrument
+
+# Identity-only scan rows, memoised per kind-tuple (see :func:`_scan_rows`).
+_NAME_CACHE: dict[tuple[str, ...], list[Instrument]] = {}
+_NAME_CACHE_LOCK = threading.Lock()
 
 # Words that carry no entity information in a market question.
 STOP_WORDS = {
@@ -101,6 +106,39 @@ def score(query_words: list[str], row: Instrument) -> float:
     return base + bonus
 
 
+def clear_name_cache() -> None:
+    """Drop the scan cache (called after a seed writes new instruments)."""
+    with _NAME_CACHE_LOCK:
+        _NAME_CACHE.clear()
+
+
+def _scan_rows(db: Session, kinds: tuple[str, ...]) -> list[Instrument]:
+    """Name/symbol/ticker columns only for the whole universe.
+
+    ``Instrument.history`` and ``Instrument.meta`` are multi-kilobyte JSON
+    columns. Loading full ORM objects for the ~2,500-row universe cost about
+    five seconds locally (and far more on a shared vCPU) because SQLAlchemy
+    deserialises every one of them just to compare a company name. Scoring only
+    needs identity columns, so they are the only ones selected, and the result
+    is memoised for repeated questions within one process.
+    """
+    key = tuple(sorted(kinds))
+    with _NAME_CACHE_LOCK:
+        hit = _NAME_CACHE.get(key)
+    if hit is not None:
+        return hit
+    rows = (db.query(Instrument)
+              .options(load_only(Instrument.id, Instrument.kind,
+                                 Instrument.symbol, Instrument.name,
+                                 Instrument.sector))
+              .filter(Instrument.kind.in_(kinds))
+              .all())
+    if rows:
+        with _NAME_CACHE_LOCK:
+            _NAME_CACHE[key] = rows
+    return rows
+
+
 def resolve(db: Session, text: str, *, kinds: tuple[str, ...] = _KINDS,
             min_coverage: float = 0.6, fuzzy_floor: float = 0.7) -> Instrument | None:
     """Best instrument for a free-text query, or None."""
@@ -117,7 +155,7 @@ def resolve(db: Session, text: str, *, kinds: tuple[str, ...] = _KINDS,
     q_words = words(raw)
     if not q_words:
         return None
-    rows = db.query(Instrument).filter(Instrument.kind.in_(kinds)).all()
+    rows = _scan_rows(db, kinds)
     if not rows:
         return None
 
