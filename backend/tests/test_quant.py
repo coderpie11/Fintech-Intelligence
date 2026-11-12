@@ -266,3 +266,38 @@ def test_turnover_is_a_realistic_crore_print():
     assert vals, "no turnover values"
     assert min(vals) > 0, "a stock prints zero turnover"
     assert sum(vals) < 250_000, f"universe turnover ₹{sum(vals):,.0f} Cr is not credible"
+
+
+# ------------------------------------------- xray must never hit the network
+def test_xray_step1_survives_blocked_nse(monkeypatch):
+    """Render gets a 403 from NSE; Step 1 must still carry rupee flows.
+
+    Regression: xray.build() called streetpulse._flows() directly, so a blocked
+    datacenter IP left the FII/DII cards showing em-dashes even though the
+    session-seeded derivation was available.
+    """
+    from app.core.db import SessionLocal
+    from app.services.ai_engine import streetpulse as SP
+    from app.services.ai_engine import xray
+
+    monkeypatch.setattr(SP, "cache_get", lambda k: None)
+
+    def _boom():
+        raise RuntimeError("NSE FII/DII feed returned 403")
+
+    monkeypatch.setattr(SP.N.nse, "fii_dii", _boom)
+
+    db = SessionLocal()
+    try:
+        d = xray.build(db)
+    finally:
+        db.close()
+
+    s1 = d["chain"]["step_1_official_flows"]
+    assert s1["fii_net_cr"] is not None
+    assert s1["dii_net_cr"] is not None
+    assert s1["combined_net_cr"] is not None
+    assert s1["fii_buy_cr"] is not None
+    assert s1["dii_sell_cr"] is not None
+    assert len(d["synthesis"]) == 4
+    assert "did not answer" not in str(s1)

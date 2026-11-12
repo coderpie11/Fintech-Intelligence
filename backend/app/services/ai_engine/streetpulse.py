@@ -480,10 +480,18 @@ def _latest_asof(uni: list[dict], news: dict | None = None,
 
 
 def _cached_external(uni: list[dict]) -> tuple[dict, dict]:
-    """Read the external-feed caches; never touch the network on this path."""
+    """Read the external-feed caches; never touch the network on this path.
+
+    A cached print with a missing leg is treated as no print at all, so the
+    session-seeded derivation fills it in. Otherwise a partially successful NSE
+    fetch could still leave Step 1 showing an em-dash.
+    """
     raw = cache_get("nse:fii_dii")
     flows = (_flows_from_raw(raw) if isinstance(raw, list) and raw
              else None)
+    if flows and (flows.get("fii_net_cr") is None
+                  or flows.get("dii_net_cr") is None):
+        flows = None
     news = cache_get("sentiment:headlines")
     if not isinstance(news, dict) or not news.get("headlines"):
         news = None

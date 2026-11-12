@@ -64,6 +64,45 @@ def _streetpulse(db):
     return quant_hub.streetpulse_payload(db, 12)
 
 
+def check_blocked_network() -> None:
+    """Reproduce Render: NSE returns 403 and no cached print exists."""
+    from app.core.db import SessionLocal
+    from app.services.ai_engine import streetpulse as SP
+    from app.services.ai_engine import xray
+
+    orig_cache, orig_fetch = SP.cache_get, SP.N.nse.fii_dii
+
+    def _boom():
+        raise RuntimeError("NSE FII/DII feed returned 403")
+
+    SP.cache_get = lambda k: None
+    SP.N.nse.fii_dii = _boom
+    db = SessionLocal()
+    try:
+        d = xray.build(db)
+        sp = _streetpulse(db)
+    finally:
+        db.close()
+        SP.cache_get = orig_cache
+        SP.N.nse.fii_dii = orig_fetch
+
+    s1 = d["chain"]["step_1_official_flows"]
+    for key in ("fii_net_cr", "dii_net_cr", "combined_net_cr",
+                "fii_buy_cr", "fii_sell_cr", "dii_buy_cr", "dii_sell_cr"):
+        check(s1.get(key) is not None,
+              f"blocked-NSE step1.{key} is null")
+    check(len(d.get("synthesis") or []) == 4,
+          "blocked-NSE synthesis is not 4 bullets")
+    sp_flows = sp.get("flows") or {}
+    check(sp_flows.get("fii_net_cr") is not None,
+          "blocked-NSE streetpulse fii_net_cr is null")
+    check(sp_flows.get("dii_net_cr") is not None,
+          "blocked-NSE streetpulse dii_net_cr is null")
+    blob = json.dumps(d, default=str)
+    check("did not answer" not in blob, "blocked-NSE payload leaks the 403 note")
+    print("blocked-NSE (Render 403) simulation: ok")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default=None)
@@ -175,6 +214,10 @@ def main() -> int:
     # Rubble check: nothing anywhere should read "did not answer".
     blob = json.dumps(d, default=str)
     check("did not answer" not in blob, "payload still contains 'did not answer'")
+    check("403" not in blob, "payload leaks an NSE 403 into the UI")
+
+    if not args.url:
+        check_blocked_network()
 
     if FAILURES:
         print(f"\n{len(FAILURES)} FAILURE(S):")

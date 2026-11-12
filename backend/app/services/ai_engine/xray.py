@@ -311,7 +311,14 @@ def build(db: Session) -> dict:
                                or SP._delivery_proxy(r))
             r["action_note"] = _action_note(r)
 
-    flows = SP._flows()
+    # Never call the live NSE feed from a request path. Render's datacenter IP
+    # gets a hard 403 from the provisional FII/DII endpoint, which left Step 1
+    # showing three em-dashes. _cached_external serves the cached official print
+    # when one has landed and otherwise falls back to the session-seeded
+    # derivation, so the rupee numbers are always present.
+    flows, _news = SP._cached_external(rows)
+    if flows.get("fii_net_cr") is None and flows.get("dii_net_cr") is None:
+        flows = SP._derived_flows(rows, p.get("asof_date") or "")
     # Volume shockers: keep the top names overall, but guarantee that every
     # sector with a shocker contributes at least a few rows so the shocker
     # table is also never empty under a sector pill.
