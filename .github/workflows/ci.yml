@@ -24,14 +24,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           # The repo deploys on 3.11.9 (backend/runtime.txt), but that exact
-          # patch is not published to actions/python-versions, so the CI runner
-          # uses the nearest available 3.11. The major.minor is what matters for
-          # these tests; the deploy pin is left untouched.
+          # patch is not published to actions/python-versions, so CI uses the
+          # nearest available 3.11. The major.minor is what these tests need;
+          # the Render pin is left untouched.
           python-version: "3.11.13"
-          cache: pip
-          cache-dependency-path: |
-            backend/requirements.txt
-            backend/requirements-dev.txt
 
       - name: Install dependencies
         run: |
