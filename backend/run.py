@@ -16,6 +16,6 @@ if __name__ == "__main__":
     restore_snapshot_if_missing()
 
     port = int(os.getenv("PORT", "8000"))
-    host = os.getenv("HOST", "127.0.0.1")
+    host = os.getenv("HOST", "0.0.0.0")
     uvicorn.run("app.main:app", host=host, port=port, reload=False,
                 loop="asyncio", http="h11")
