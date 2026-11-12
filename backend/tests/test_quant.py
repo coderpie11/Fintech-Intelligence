@@ -145,3 +145,44 @@ def test_sip_and_ltcg_helpers_are_sane():
     harvest = calc.ltcg_harvest_window(200_000, 50_000)
     assert harvest["post_tax_gain"] <= 200_000
     assert harvest["exemption_left"] == 75_000
+
+
+# ------------------------------------------------- 4 PM Market X-Ray contract
+def test_xray_build_matches_frontend_contract():
+    """The X-Ray must build from SQLite and satisfy what XRay.tsx reads.
+
+    Regression: a StreetPulse refactor replaced the per-symbol delivery lookup
+    with a batched ``_delivery_map``; the X-Ray kept calling the old private
+    name and every production request 500'd ("could not load: Failed to
+    fetch"). This test fails if that coupling breaks again.
+    """
+    from app.core.db import SessionLocal
+    from app.services.ai_engine import xray
+
+    db = SessionLocal()
+    try:
+        d = xray.build(db)
+    finally:
+        db.close()
+
+    for key in ("asof", "session_label", "market_status", "chain", "sectors",
+                "volume_shockers", "top_gainers", "top_losers",
+                "action_items", "synthesis", "footer_note"):
+        assert key in d, f"missing top-level key {key}"
+
+    chain = d["chain"]
+    for step in ("step_1_official_flows", "step_2_sector_tilt",
+                 "step_3_stock_confirmation", "step_4_context"):
+        assert step in chain, f"missing chain step {step}"
+
+    # Step 3 rows are the only ones rendering a Delivery Z column.
+    for row in chain["step_3_stock_confirmation"]["rows"]:
+        assert row.get("delivery_z"), f"{row['symbol']} has no delivery_z"
+        assert set(("current", "mean", "z", "sessions")) <= set(row["delivery_z"])
+        assert isinstance(row["delivery_z"]["z"], float)
+
+    # Every sector tilt must be a real participation measure with breadth.
+    for s in d["sectors"]:
+        assert s["count"] >= 1
+        assert "participation_tilt" in s
+    assert len(d["synthesis"]) >= 1

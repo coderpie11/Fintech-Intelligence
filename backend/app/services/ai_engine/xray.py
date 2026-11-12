@@ -126,8 +126,14 @@ def build(db: Session) -> dict:
                      if (r["sector"] or "Unclassified") in strong_sectors
                      and (r["delivery_pct"] or 0) >= 55
                      and (r["changepct"] or 0) > 0]
-    for r in confirmations:
-        r["delivery_z"] = SP._delivery_z(db, r["symbol"])
+    # One batched lookup for every stored delivery series; symbols with no
+    # history keep StreetPulse's own proxy so the column is never silently
+    # blank and the X-Ray can never disagree with the matrix.
+    if confirmations:
+        delivery = SP._delivery_map(db)
+        for r in confirmations:
+            r["delivery_z"] = (delivery.get(r["symbol"].upper())
+                               or SP._delivery_proxy(r))
     confirmations.sort(key=lambda x: (x["delivery_pct"] or 0,
                                       x["volume_ratio"] or 0), reverse=True)
 
