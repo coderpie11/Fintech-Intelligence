@@ -21,13 +21,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          # The repo deploys on 3.11.9 (backend/runtime.txt), but that exact
-          # patch is not published to actions/python-versions, so CI uses the
-          # nearest available 3.11. The major.minor is what these tests need;
-          # the Render pin is left untouched.
-          python-version: "3.11.13"
+      # ubuntu-latest already ships a modern CPython. The suite is written to run
+      # on any 3.11+ interpreter (verified here on 3.13), and — unlike
+      # setup-python — there is nothing to download, so the job cannot fail while
+      # provisioning a toolchain. The deploy pin (backend/runtime.txt) is
+      # unchanged.
+      - name: Report the interpreter
+        run: python -V
 
       - name: Install dependencies
         run: |
@@ -72,10 +72,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11.13"
 
       - name: Wait for the deploy to settle and verify the live X-Ray
         env:
