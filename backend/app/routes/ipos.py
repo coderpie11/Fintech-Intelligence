@@ -10,11 +10,12 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import threading
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.core.db import get_db
 from app.data.adapters import ipogmp_adapter as IG
@@ -57,8 +58,52 @@ def _registrar_link(name: str | None, fallback: str | None = None) -> str | None
 
 
 # --------------------------------------------------------------- live merge
-_SYNC_STATE: dict = {"at": 0.0, "result": None}
+# A cold InvestorGain scrape takes 30+ seconds, so the HTTP handlers never wait
+# for it. They serve the stored rows immediately and let a daemon thread refresh
+# the cache for the next request (and the background warm-up loop in main.py).
+_SYNC_STATE: dict = {"at": 0.0, "result": None, "running": False}
 SYNC_TTL = 600.0
+
+
+def _sync_fresh() -> bool:
+    import time as _t
+
+    return (_SYNC_STATE["result"] is not None
+            and _t.time() - float(_SYNC_STATE["at"]) < SYNC_TTL)
+
+
+def _sync_snapshot() -> dict:
+    """Last merged live payload, or a labelled pending envelope."""
+    cached = _SYNC_STATE.get("result")
+    if isinstance(cached, dict):
+        return cached
+    return {"ok": False, "count": 0, "pending": True, "fetched_at": None,
+            "note": ("Stored offer-document archive served immediately; the "
+                     "live InvestorGain refresh is running in the background.")}
+
+
+def _start_background_sync() -> None:
+    """Kick a one-shot refresh on a daemon thread with its own DB session."""
+    if _SYNC_STATE.get("running"):
+        return
+    _SYNC_STATE["running"] = True
+
+    def _worker():
+        from app.core.db import SessionLocal
+
+        session = SessionLocal()
+        try:
+            _sync_live(session)
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            try:
+                session.close()
+            finally:
+                _SYNC_STATE["running"] = False
+
+    threading.Thread(target=_worker, daemon=True,
+                     name="ipo-live-sync").start()
 
 
 def _sync_live(db: Session) -> dict:
@@ -144,14 +189,18 @@ def _live_meta(i: Ipo) -> dict:
 
 
 def _price(i: Ipo, db: Session) -> dict:
-    """Live post-listing price: Yahoo-backed instrument row, then IG print."""
+    """Stored post-listing price: instrument snapshot, then the IG print.
+
+    Deliberately no live refresh here. This feeds the list endpoint, which must
+    answer from SQLite alone: a per-row ``ensure_instrument_ready`` call was the
+    real cost of a cold ``/ipos`` (dozens of upstream quote fetches in series).
+    """
     m = i.meta or {}
     if i.symbol:
         row = (db.query(Instrument)
+                 .options(defer(Instrument.history))
                  .filter_by(kind="EQUITY", symbol=i.symbol.upper()).one_or_none())
         if row:
-            from app.services import instrument_engine as IE
-            IE.ensure_instrument_ready(db, row)
             rm = row.meta or {}
             if rm.get("lastPrice") is not None:
                 return {"last": _env(rm.get("lastPrice"), "post-listing price"),
@@ -280,7 +329,12 @@ def _row(i: Ipo, db: Session) -> dict:
 def list_ipos(filter: str = "all", board: str | None = None,
               q: str | None = None, sort: str = "status",
               limit: int = Query(120, le=300), db: Session = Depends(get_db)):
-    sync = _sync_live(db)
+    if _sync_fresh():
+        sync = _SYNC_STATE["result"]
+    else:
+        # Cold/stale cache: answer from the stored archive now, refresh later.
+        _start_background_sync()
+        sync = _sync_snapshot()
     query = db.query(Ipo)
     f = (filter or "all").lower()
     if f in ("open", "live"):
@@ -348,7 +402,10 @@ def list_ipos(filter: str = "all", board: str | None = None,
         "live_sync": sync,
         "feed_status": reported(
             "InvestorGain live GMP report + offer-document archive"
-            if sync.get("ok") else "Offer-document archive (live scrape unavailable)"),
+            if sync.get("ok") else
+            "Offer-document archive (live refresh running in the background)"
+            if sync.get("pending") else
+            "Offer-document archive (live scrape unavailable)"),
         "source_note": ("GMP, fire rating, subscription and listing prints are "
                         "scraped live from InvestorGain's public report. Issue facts "
                         "come from exchange offer documents. GMP is unofficial and "

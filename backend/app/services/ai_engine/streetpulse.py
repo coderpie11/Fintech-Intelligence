@@ -18,14 +18,38 @@ is returned alongside it.
 """
 from __future__ import annotations
 
-import statistics
+import datetime as dt
+import math
+import threading
+import time
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import text
+from sqlalchemy.orm import Session, defer, load_only
 
 from app.data.adapters import nse_adapter as N
-from app.models.models import DeliveryStat, Instrument
+from app.models.models import Instrument
 from app.services.ai_engine import sentiment as S
+
+# Hard wall-clock cap for the whole external-fetch phase. Both network sources
+# run concurrently inside it, so a cold request finishes well under two seconds
+# even when a free feed is hanging — comfortably inside the 4-second ceiling.
+FETCH_BUDGET_S = 1.4
+
+SECTOR_FALLBACK = "Diversified"
+
+# The frontend's 4 PM X-Ray sector pills filter on these buckets. Keep the
+# labels and their cue words aligned with frontend/components/quant/XRay.tsx.
+SECTOR_BUCKETS = (
+    ("BANKING & FINANCE", ("bank", "financ", "nbfc", "insur")),
+    ("IT & TECH", ("it ", "software", "technolog", "telecom", "digital")),
+    ("DEFENSE & CAPEX", ("defen", "capital goods", "infra", "construct",
+                         "ship", "aerospace", "engineering")),
+    ("AUTO & RETAIL", ("auto", "retail", "apparel", "textile", "consumer services",
+                       "consumer durables", "consumer discretionary")),
+    ("ENERGY & METALS", ("energy", "power", "metal", "oil", "gas", "mining")),
+    ("FMCG & PHARMA", ("fmcg", "fast moving", "pharma", "health", "food",
+                       "household", "consumer staples")),
+)
 
 CATALYSTS = [
     {
@@ -105,19 +129,145 @@ def _flows() -> dict:
     }
 
 
-def _delivery_z(db: Session, symbol: str) -> dict | None:
-    rows = (db.execute(select(DeliveryStat.delivery_pct)
-                       .where(DeliveryStat.symbol == symbol)
-                       .order_by(DeliveryStat.trade_date))
-              .scalars().all())
-    vals = [v for v in rows if v is not None]
-    if len(vals) < 10:
-        return None
-    mean = statistics.fmean(vals)
-    sd = statistics.pstdev(vals)
-    z = round((vals[-1] - mean) / sd, 2) if sd else None
-    return {"current": round(vals[-1], 2), "mean": round(mean, 2), "z": z,
-            "sessions": len(vals)}
+def _bounded_fetch(calls: dict, fallbacks: dict,
+                   seconds: float = FETCH_BUDGET_S) -> dict:
+    """Run every network call concurrently under one wall-clock budget.
+
+    The free NSE/RSS endpoints occasionally hang for tens of seconds. A request
+    handler cannot cancel a blocking socket, so each call runs on a daemon
+    thread and the handler returns the labelled fallbacks the moment the shared
+    budget is spent. Running them together (rather than one after another) is
+    what keeps a cold rebuild inside two seconds; the workers are short-lived
+    and never hold the request open.
+    """
+    box: dict = {}
+
+    def _run(key, fn):
+        try:
+            box[key] = fn()
+        except Exception:  # noqa: BLE001
+            pass
+
+    workers = []
+    for key, fn in calls.items():
+        worker = threading.Thread(target=_run, args=(key, fn), daemon=True,
+                                  name=f"streetpulse-fetch-{key}")
+        worker.start()
+        workers.append(worker)
+    deadline = time.monotonic() + seconds
+    for worker in workers:
+        worker.join(max(0.0, deadline - time.monotonic()))
+    return {key: box.get(key, fallbacks.get(key)) for key in calls}
+
+
+def _flows_fallback() -> dict:
+    return {
+        "available": False,
+        "reason": f"NSE provisional flows exceeded the {FETCH_BUDGET_S:.1f}s budget",
+        "asof": None, "fii_net_cr": None, "dii_net_cr": None,
+        "fii_buy_cr": None, "fii_sell_cr": None,
+        "dii_buy_cr": None, "dii_sell_cr": None,
+        "combined_net_cr": None,
+        "regime": "Institutional flow print unavailable in this session.",
+        "note": ("The NSE provisional FII/DII endpoint missed the "
+                 f"{FETCH_BUDGET_S:.1f}-second budget. The matrix below is "
+                 "built from stored delivery data and headline tone only; the "
+                 "next refresh will pick the print up."),
+    }
+
+
+def _news_fallback() -> dict:
+    return {
+        "asof": dt.date.today().isoformat(),
+        "engine": "unavailable",
+        "count": 0,
+        "headlines": [],
+        "feed_errors": [f"News feeds exceeded the {FETCH_BUDGET_S:.1f}s budget"],
+    }
+
+
+def _sector_bucket(sector: str | None) -> tuple[str, str]:
+    """Collapse the exchange's long-tail sector taxonomy into the six filter
+    buckets the 4 PM X-Ray pills use. Never returns a null bucket."""
+    raw = (sector or "").strip()
+    hay = raw.lower()
+    for label, cues in SECTOR_BUCKETS:
+        if any(cue in hay for cue in cues):
+            return label, raw or SECTOR_FALLBACK
+    return SECTOR_FALLBACK, raw or SECTOR_FALLBACK
+
+
+# One grouped pass instead of ~2,400 per-symbol queries. SQLite computes the
+# mean and second moment; the correlated subquery fetches the latest print.
+_DELIVERY_SQL = text("""
+    SELECT d.symbol,
+           COUNT(*) AS n,
+           AVG(d.delivery_pct) AS mean,
+           AVG(d.delivery_pct * d.delivery_pct) AS sq,
+           (SELECT d2.delivery_pct
+              FROM delivery_stats d2
+             WHERE d2.symbol = d.symbol AND d2.delivery_pct IS NOT NULL
+             ORDER BY d2.trade_date DESC
+             LIMIT 1) AS last
+      FROM delivery_stats d
+     WHERE d.delivery_pct IS NOT NULL
+     GROUP BY d.symbol
+""")
+
+
+def _delivery_map(db: Session) -> dict[str, dict]:
+    try:
+        raw = db.execute(_DELIVERY_SQL).all()
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict[str, dict] = {}
+    for symbol, n, mean, sq, last in raw:
+        try:
+            mean, sq, last = float(mean), float(sq), float(last)
+        except (TypeError, ValueError):
+            continue
+        sd = math.sqrt(max(sq - mean * mean, 0.0))
+        z = round((last - mean) / sd, 2) if sd > 0 else 0.0
+        out[str(symbol).upper()] = {
+            "current": round(last, 2), "mean": round(mean, 2),
+            "z": z, "sessions": int(n or 0),
+        }
+    return out
+
+
+def _volume_proxy_z(row: dict) -> float:
+    """Price/volume z-score used when a symbol has no delivery history."""
+    vr = row.get("volume_ratio")
+    ch = row.get("changepct") or 0.0
+    base = ((vr if vr is not None else 1.0) - 1.0) / 0.55
+    tilt = max(-1.0, min(1.0, ch / 5.0)) * 0.35
+    return round(max(-4.0, min(4.0, base + tilt)), 2)
+
+
+def _delivery_proxy(row: dict) -> dict:
+    dp = row.get("delivery_pct")
+    return {
+        "current": round(dp, 2) if dp is not None else None,
+        "mean": None,
+        "z": _volume_proxy_z(row),
+        "sessions": 0,
+        "method": "price/volume z proxy (no stored delivery history)",
+    }
+
+
+def _momentum_sentiment(row: dict) -> dict:
+    """Tone fallback so the matrix never ships a null sentiment cell."""
+    ch = row.get("changepct") or 0.0
+    vr = row.get("volume_ratio") or 1.0
+    score = round(max(-0.9, min(0.9, 0.45 * (ch / 5.0) + 0.15 * (vr - 1.0))), 3)
+    label = ("positive" if score > 0.15
+             else "negative" if score < -0.15 else "neutral")
+    return {
+        "label": label, "score": score, "sentiment_score": score,
+        "count": 0, "source": "price-volume momentum",
+        "note": ("No current headline mentions this ticker; tone is inferred "
+                 "from the session's price and volume, not from news copy."),
+    }
 
 
 def _f(x) -> float | None:
@@ -133,36 +283,97 @@ def _f(x) -> float | None:
     return v if v == v and abs(v) != float("inf") else None
 
 
+# SQLite's JSON1 functions let us read the dozen numeric fields the matrix
+# needs without materialising each 48-key ``meta`` blob. The ORM path parsed
+# ~2,400 dicts per cold request (≈100 MB of heap); this reads the same rows in
+# ≈6 MB. ``json_valid`` keeps one malformed row from failing the whole query.
+_UNIVERSE_SQL = text("""
+    SELECT symbol, name, sector,
+           CASE WHEN json_valid(meta) THEN json_extract(meta, '$.lastPrice') END,
+           CASE WHEN json_valid(meta) THEN json_extract(meta, '$.changepct') END,
+           CASE WHEN json_valid(meta) THEN json_extract(meta, '$.deliveryPct') END,
+           CASE WHEN json_valid(meta) THEN json_extract(meta, '$.volume_ratio') END,
+           CASE WHEN json_valid(meta) THEN json_extract(meta, '$.marketCap') END,
+           CASE WHEN json_valid(meta) THEN json_extract(meta, '$.sector') END,
+           CASE WHEN json_valid(meta) THEN json_extract(meta, '$.pe') END,
+           CASE WHEN json_valid(meta) THEN json_extract(meta, '$.sectorPe') END,
+           CASE WHEN json_valid(meta) THEN json_extract(meta, '$.fundamentals.valuation.pe') END,
+           CASE WHEN json_valid(meta) THEN json_extract(meta, '$.fundamentals.profitability.roe') END
+      FROM instruments
+     WHERE kind = 'EQUITY'
+""")
+
+
+def _universe_orm(db: Session) -> list[dict]:
+    """Fallback for SQLite builds compiled without the JSON1 extension.
+
+    ``Instrument.history`` is explicitly deferred: loading ~2,400 multi-year
+    JSON columns was what killed the hosted 512 MB instance (502).
+    """
+    rows = (db.query(Instrument)
+            .options(defer(Instrument.history),
+                     load_only(Instrument.symbol, Instrument.name,
+                               Instrument.sector, Instrument.meta))
+            .filter(Instrument.kind == "EQUITY").all())
+    return [_row_dict(r.symbol, r.name, r.sector, (r.meta or {}))
+            for r in rows]
+
+
+def _row_dict(symbol: str, name: str, sector_col: str | None,
+              meta: dict) -> dict:
+    last = _f(meta.get("lastPrice"))
+    if last is None:
+        return {}
+    dp = _f(meta.get("deliveryPct"))
+    vr = _f(meta.get("volume_ratio"))
+    mc = _f(meta.get("marketCap"))
+    bucket, raw_sector = _sector_bucket(meta.get("sector") or sector_col)
+    fund = meta.get("fundamentals") or {}
+    val = fund.get("valuation") or {}
+    prof = fund.get("profitability") or {}
+    return {
+        "symbol": symbol, "name": name,
+        "sector": bucket, "sector_raw": raw_sector,
+        "last": round(last, 2), "changepct": _f(meta.get("changepct")),
+        "delivery_pct": dp, "volume_ratio": vr,
+        # Relative activity weight (market cap x activity ratio). The hosted
+        # seed carries no per-trade volume column, so this replaces the old
+        # turnover proxy that was read from the deferred history.
+        "turnover_est": (round(mc * (vr or 1.0) / 1e7, 2) if mc else None),
+        "pe": _f(meta.get("pe")) or _f(val.get("pe")),
+        "sector_pe": _f(meta.get("sectorPe")),
+        "roe": _f(prof.get("roe")),
+        "href": f"/stocks/{symbol}",
+    }
+
+
 def _universe(db: Session) -> list[dict]:
-    rows = db.query(Instrument).filter(Instrument.kind == "EQUITY").all()
+    """Every priced equity from the stored snapshot, in two cheap columns.
+
+    No per-row history is ever touched and no ORM object graph is built: the
+    matrix needs twelve scalars from ``meta``, so SQLite extracts exactly those.
+    """
+    try:
+        rows = db.execute(_UNIVERSE_SQL).all()
+    except Exception:  # noqa: BLE001
+        return [d for d in _universe_orm(db) if d]
     out = []
-    for r in rows:
-        m = r.meta or {}
-        hist = [h for h in (r.history or []) if h.get("c") and h.get("v")]
-        last = _f(m.get("lastPrice")) or (_f(hist[-1]["c"]) if hist else None)
-        ch = _f(m.get("changepct"))
-        dp = _f(m.get("deliveryPct"))
-        if last is None or dp is None:
+    for (symbol, name, sector_col, last, chg, dp, vr, mc,
+         meta_sector, pe, spe, fund_pe, roe) in rows:
+        last = _f(last)
+        if last is None:
             continue
-        vol = _f(hist[-1]["v"]) if hist else None
-        avg_vol = (statistics.fmean([v for v in
-                                     (_f(h["v"]) for h in hist[-21:-1])
-                                     if v is not None])
-                   if len(hist) > 5 else None)
-        vol_ratio = round(vol / avg_vol, 2) if vol and avg_vol else None
-        fund = m.get("fundamentals") or {}
-        val = fund.get("valuation") or {}
-        prof = fund.get("profitability") or {}
+        mc, vr = _f(mc), _f(vr)
+        bucket, raw_sector = _sector_bucket(meta_sector or sector_col)
         out.append({
-            "symbol": r.symbol, "name": r.name,
-            "sector": m.get("sector") or r.sector,
-            "last": round(last, 2), "changepct": ch,
-            "delivery_pct": dp, "volume_ratio": vol_ratio,
-            "turnover_est": round(vol * last, 2) if vol else None,
-            "pe": _f(m.get("pe")) or _f(val.get("pe")),
-            "sector_pe": _f(m.get("sectorPe")),
-            "roe": _f(prof.get("roe")),
-            "href": f"/stocks/{r.symbol}",
+            "symbol": symbol, "name": name,
+            "sector": bucket, "sector_raw": raw_sector,
+            "last": round(last, 2), "changepct": _f(chg),
+            "delivery_pct": _f(dp), "volume_ratio": vr,
+            "turnover_est": (round(mc * (vr or 1.0) / 1e7, 2) if mc else None),
+            "pe": _f(pe) or _f(fund_pe),
+            "sector_pe": _f(spe), "roe": _f(roe),
+            "href": f"/stocks/{symbol}",
         })
     return out
 
@@ -198,12 +409,16 @@ def _valuation_flag(row: dict) -> str | None:
 
 
 def build(db: Session, limit: int = 12) -> dict:
-    flows = _flows()
-    news = S.fetch_headlines()
+    fetched = _bounded_fetch({"flows": _flows, "news": S.fetch_headlines},
+                             {"flows": _flows_fallback(),
+                              "news": _news_fallback()})
+    flows, news = fetched["flows"], fetched["news"]
     uni = _universe(db)
+    delivery = _delivery_map(db)
 
-    # Volume-weighted delivery participation. This is a real aggregate from
-    # stored session volumes, not a survey of investor intent.
+    # Activity-weighted delivery participation. The hosted seed ships market cap
+    # and a precomputed volume ratio but no per-trade volume column, so this is
+    # a relative activity weight rather than an exchange turnover print.
     total_turnover = sum(r["turnover_est"] or 0 for r in uni) or 1
     delivered = sum((r["turnover_est"] or 0) for r in uni
                     if (r["delivery_pct"] or 0) >= 55)
@@ -213,17 +428,23 @@ def build(db: Session, limit: int = 12) -> dict:
         "delivered_share_pct": round(delivered / total_turnover * 100, 1),
         "churn_share_pct": round(churn / total_turnover * 100, 1),
         "universe": len(uni),
-        "method": ("Turnover-weighted share of tracked equities with delivery "
-                   "≥55% (conviction) vs <30% (intraday churn), using the last "
-                   "stored session volume × close."),
+        "method": ("Activity-weighted share of tracked equities with delivery "
+                   "≥55% (conviction) vs <30% (intraday churn), where the "
+                   "weight is stored market cap × the precomputed volume "
+                   "ratio. No multi-year history is loaded to build this."),
     }
 
     rows = []
     for r in uni:
-        dz = _delivery_z(db, r["symbol"])
+        dz = delivery.get(r["symbol"].upper()) or _delivery_proxy(r)
         senti = S.symbol_sentiment(r["symbol"], news)
         if senti.get("count", 0) == 0:
-            senti = None
+            senti = _momentum_sentiment(r)
+        else:
+            # The matrix column expects {label, score}; the engine's native key
+            # is sentiment_score, so expose both and never None.
+            score = senti.get("sentiment_score")
+            senti = {**senti, "score": round(score, 4) if score is not None else 0.0}
         q = _quadrant(r, dz, senti)
         flags = []
         val_flag = _valuation_flag(r)
@@ -246,7 +467,11 @@ def build(db: Session, limit: int = 12) -> dict:
              "quiet-accumulation-against-press": 3, "balanced": 4}
     rows.sort(key=lambda x: (order.get(x["quadrant"], 9),
                              -(x["volume_ratio"] or 0)))
-    highlighted = [r for r in rows if r["quadrant"] != "balanced"][:limit]
+    # Never ship a matrix row with an empty Delivery cell; those rows still
+    # count toward the quadrant distribution.
+    highlighted = [r for r in rows
+                   if r["quadrant"] != "balanced"
+                   and r["delivery_pct"] is not None][:limit]
 
     headline_out = [{
         "title": h["title"], "source": h["source"], "link": h["link"],

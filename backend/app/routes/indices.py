@@ -25,8 +25,17 @@ FNO_OK = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50",
           "SENSEX", "INDIAVIX"}
 
 
+_SLUG_ALIASES = {
+    "bse-sensex": "sensex",
+    "bse_sensex": "sensex",
+    "sensex-30": "sensex",
+}
+
+
 def spec_for_slug(slug: str) -> dict | None:
-    return next((s for s in INDICES if s["slug"] == slug), None)
+    key = (slug or "").strip().lower()
+    key = _SLUG_ALIASES.get(key, key)
+    return next((s for s in INDICES if s["slug"] == key), None)
 
 
 def slug_for(row: Instrument) -> str:
