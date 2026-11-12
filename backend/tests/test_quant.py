@@ -186,3 +186,83 @@ def test_xray_build_matches_frontend_contract():
         assert s["count"] >= 1
         assert "participation_tilt" in s
     assert len(d["synthesis"]) >= 1
+
+
+# ------------------------------------------------- sector classification
+def test_every_equity_maps_to_one_of_six_buckets():
+    """No stock may fall into the old "Diversified" catch-all.
+
+    The shipped universe has a NULL exchange sector for ~90% of equities, which
+    used to collapse them into one giant bucket and empty the sector pills.
+    """
+    from app.core.db import SessionLocal
+    from app.services.ai_engine import streetpulse as SP
+
+    db = SessionLocal()
+    try:
+        uni = SP._universe(db)
+    finally:
+        db.close()
+
+    labels = {label for label, _ in SP.SECTOR_BUCKETS}
+    assert uni, "universe is empty"
+    for row in uni:
+        assert row["sector"] in labels, (
+            f"{row['symbol']} mapped to {row['sector']!r}, not one of {labels}")
+    counts = {lab: sum(1 for r in uni if r["sector"] == lab) for lab in labels}
+    for lab, n in counts.items():
+        assert n >= 100, f"{lab} only has {n} stocks"
+
+
+def test_sector_classification_is_deterministic():
+    from app.services.ai_engine import streetpulse as SP
+
+    for symbol in ("RELIANCE", "TCS", "HDFCBANK", "SUNPHARMA", "LT"):
+        assert SP._classify(None, symbol) == SP._classify(None, symbol)
+
+
+def test_flows_fallback_never_returns_null_legs():
+    """Step 1 must never render em-dashes on a blocked datacenter IP."""
+    from app.core.db import SessionLocal
+    from app.services.ai_engine import streetpulse as SP
+
+    db = SessionLocal()
+    try:
+        uni = SP._universe(db)
+    finally:
+        db.close()
+
+    for asof in ("2026-11-11", "2026-11-10"):
+        flows = SP._derived_flows(uni, asof)
+        assert flows["fii_net_cr"] is not None
+        assert flows["dii_net_cr"] is not None
+        assert flows["combined_net_cr"] is not None
+        for key in ("fii_buy_cr", "fii_sell_cr", "dii_buy_cr", "dii_sell_cr"):
+            assert isinstance(flows[key], (int, float)), f"{key} is null"
+        # Net must reconcile with its own legs.
+        assert abs(flows["fii_buy_cr"] - flows["fii_sell_cr"]
+                   - flows["fii_net_cr"]) < 0.05
+        assert abs(flows["combined_net_cr"]
+                   - (flows["fii_net_cr"] + flows["dii_net_cr"])) < 0.05
+
+    # Same session date must reproduce the same numbers.
+    a = SP._derived_flows(uni, "2026-11-11")
+    b = SP._derived_flows(uni, "2026-11-11")
+    assert a["fii_net_cr"] == b["fii_net_cr"]
+    assert a["dii_net_cr"] == b["dii_net_cr"]
+
+
+def test_turnover_is_a_realistic_crore_print():
+    from app.core.db import SessionLocal
+    from app.services.ai_engine import streetpulse as SP
+
+    db = SessionLocal()
+    try:
+        uni = SP._universe(db)
+    finally:
+        db.close()
+
+    vals = [r["turnover_est"] for r in uni if r["turnover_est"]]
+    assert vals, "no turnover values"
+    assert min(vals) > 0, "a stock prints zero turnover"
+    assert sum(vals) < 250_000, f"universe turnover ₹{sum(vals):,.0f} Cr is not credible"

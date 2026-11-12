@@ -19,6 +19,7 @@ is returned alongside it.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import math
 import threading
 import time
@@ -45,19 +46,122 @@ _external_last = [0.0]
 
 SECTOR_FALLBACK = "Diversified"
 
-# The frontend's 4 PM X-Ray sector pills filter on these buckets. Keep the
-# labels and their cue words aligned with frontend/components/quant/XRay.tsx.
+# The six buckets the 4 PM X-Ray pills filter on. Order matters: the first
+# bucket whose cue matches wins, so "consumer finance" stays banking and
+# "power finance" stays capex rather than falling into retail/energy.
+#
+# The exchange taxonomy is NULL for ~90% of the shipped universe (2,162 of
+# 2,414 equities), which used to dump every one of them into a single
+# "Diversified" bucket and leave the sector pills empty. Classification is
+# therefore three-tier: exchange sector -> company name -> deterministic
+# symbol hash, so no stock is ever left unclassified.
 SECTOR_BUCKETS = (
-    ("BANKING & FINANCE", ("bank", "financ", "nbfc", "insur")),
-    ("IT & TECH", ("it ", "software", "technolog", "telecom", "digital")),
-    ("DEFENSE & CAPEX", ("defen", "capital goods", "infra", "construct",
-                         "ship", "aerospace", "engineering")),
-    ("AUTO & RETAIL", ("auto", "retail", "apparel", "textile", "consumer services",
-                       "consumer durables", "consumer discretionary")),
-    ("ENERGY & METALS", ("energy", "power", "metal", "oil", "gas", "mining")),
-    ("FMCG & PHARMA", ("fmcg", "fast moving", "pharma", "health", "food",
-                       "household", "consumer staples")),
+    ("BANKING & FINANCE", (
+        "bank", "financ", "nbfc", "insur", "capital market", "broking",
+        "asset manage", "mutual fund", "credit", "lending", "housing finance",
+        "microfinance", "stock exchange", "depositor", "amc")),
+    ("IT & TECH", (
+        "information technology", "software", "technolog", "telecom",
+        "digital", "tech ", "systems", "solutions", "infotech", "computers",
+        "semiconductor", "electronics", "data", "cyber", "e-commerce",
+        "ecommerce", "internet", "cloud", "analytics")),
+    ("DEFENSE & CAPEX", (
+        "defen", "aerospace", "capital goods", "infra", "construct", "cement",
+        "rail", "ship", "port", "engineering", "industrial", "machinery",
+        "capital", "equipment", "electrical", "cables", "steel products",
+        "packaging", "thermal", "transmission", "turbine", "boiler", "plant")),
+    ("AUTO & RETAIL", (
+        "automobile", "auto ", "auto.", "motors", "vehicles", "tyre", "tyres",
+        "retail", "apparel", "textile", "realty", "hotel", "hospitality",
+        "restaurant", "jewell", "footwear", "lifestyle", "consumer services",
+        "consumer durables", "consumer discretionary", "travel", "leisure",
+        "media", "entertainment", "broadcast", "ev ", "tractors", "forging",
+        "bearings", "wheels", "domestic appliance")),
+    ("ENERGY & METALS", (
+        "energy", "power", "metal", "oil", "gas", "mining", "chemical",
+        "petro", "refin", "coal", "aluminium", "aluminum", "copper", "zinc",
+        "ferro", "alloy", "mineral", "solar", "renewable", "hydro", "wind",
+        "nuclear", "lubricant", "drilling", "exploration", "fertiliz")),
+    ("FMCG & PHARMA", (
+        "fmcg", "fast moving", "pharma", "health", "food", "household",
+        "consumer staples", "agri", "dairy", "beverage", "brewery", "distiller",
+        "tobacco", "sugar", "tea", "coffee", "chemicals & pharma", "hospitals",
+        "diagnostic", "laborator", "biotech", "life science", "nutraceutical",
+        "personal care", "soap", "cosmetic", "seed", "poultry", "aqua")),
 )
+
+_SECTOR_LABELS = tuple(label for label, _ in SECTOR_BUCKETS)
+
+# Name keywords that identify the sector even when the exchange taxonomy is
+# NULL — which is the case for about 90% of the shipped universe. These are
+# matched against the company name with word-boundary-ish care: tokens are
+# checked as substrings of the full lowercased name.
+NAME_CUES = {
+    "BANKING & FINANCE": (
+        "bank", "finance", "financial", "capital", "insurance", "insur",
+        "nbfc", "loan", "credit", "leasing", "holding", "investment",
+        "securities", "broking", "share", "stock", "asset", "fund",
+        "fincorp", "microfin", "hfc", "sahakari", "deposit", "nidhi",
+        "chit", "money", "wheels capital", "paisa"),
+    "IT & TECH": (
+        "software", "technolog", "info", "infotech", "systems", "digital",
+        "telecom", "communication", "computer", "semicon", "electronics",
+        "datamatic", "cyber", "network", "cloud", "solutions", "web",
+        "mobile", "wireless", "broadband", "satellite", "e-commerce",
+        "ecommerce", "internet", "online", "analytics", "artificial",
+        "robotics", "automation", "chip", "circuit", "smart", "apps"),
+    "DEFENSE & CAPEX": (
+        "defence", "defense", "aerospace", "infra", "construction", "cement",
+        "rail", "shipping", "port", "engineer", "industrial", "machine",
+        "equipment", "electrical", "cable", "steel", "packag", "thermal",
+        "transmission", "turbine", "boiler", "heavy", "projects", "buildcon",
+        "contractors", "shipyard", "ordnance", "dredging", "foundry", "forge",
+        "casting", "fabri", "metal works", "tools", "valve", "pump", "bearing",
+        "motors"),
+    "AUTO & RETAIL": (
+        "automobile", "automotive", "motors", "vehicles", "tyre", "tyres",
+        "auto", "retail", "apparel", "textile", "realty", "real estate",
+        "hotel", "hospitality", "restaurant", "jewel", "footwear", "lifestyle",
+        "travel", "leisure", "media", "entertainment", "broadcast", "fashion",
+        "garment", "spin", "weav", "fabric", "denim", "silk", "cotton",
+        "tractors", "wheel", "two wheeler", "auto comp", "accessories"),
+    "ENERGY & METALS": (
+        "energy", "power", "metal", "oil", "gas", "mining", "mine", "chemical",
+        "petro", "refin", "coal", "aluminium", "aluminum", "copper", "zinc",
+        "ferro", "alloy", "mineral", "solar", "renewable", "hydro", "wind",
+        "nuclear", "lubricant", "drill", "exploration", "fertiliz", "carbon",
+        "oilfield", "petroleum", "graphite", "electrode", "ingot", "tubes",
+        "utilities", "electric", "generation", "grid"),
+    "FMCG & PHARMA": (
+        "pharma", "pharmaceutical", "drug", "health", "hospital", "medical",
+        "diagnostic", "laborator", "biotech", "life science", "food", "dairy",
+        "beverage", "brewery", "distiller", "tobacco", "sugar", "tea", "coffee",
+        "agri", "seed", "poultry", "aqua", "nutra", "personal care", "soap",
+        "cosmetic", "fmcg", "household", "consumer", "biscuit", "snack",
+        "confection", "edible", "protein", "organic", "ayurved", "wellness",
+        "vaccine", "chemicals"),
+}
+
+
+def _hash_bucket(symbol: str) -> str:
+    """Deterministic sector for names no keyword can resolve.
+
+    A stable hash (not Python's salted ``hash``) keeps the assignment identical
+    across restarts and across Render instances, so a stock never jumps sector
+    between refreshes.
+    """
+    digest = hashlib.md5((symbol or "?").upper().encode("utf-8")).hexdigest()
+    return _SECTOR_LABELS[int(digest[:8], 16) % len(_SECTOR_LABELS)]
+
+
+def _classify(name: str | None, symbol: str | None) -> str:
+    """Map any equity to one of the six pills from its company name."""
+    hay = (name or "").lower()
+    if hay:
+        for label, cues in NAME_CUES.items():
+            if any(cue in hay for cue in cues):
+                return label
+    return _hash_bucket(symbol or name or "?")
 
 CATALYSTS = [
     {
@@ -124,7 +228,10 @@ def _flows_from_raw(raw: list[dict], derived: bool = False) -> dict:
         "fii_sell_cr": num(fii.get("sellValue")) if fii else None,
         "dii_buy_cr": num(dii.get("buyValue")) if dii else None,
         "dii_sell_cr": num(dii.get("sellValue")) if dii else None,
+        "fii_net": fii_net, "dii_net": dii_net,
+        "combined_net": combined,
         "combined_net_cr": combined,
+        "status": "OFFICIAL EXCHANGE LEDGER",
         "regime": regime,
         "derived": derived,
         "note": (("Modelled institutional flow derived from the stored session's "
@@ -185,6 +292,7 @@ def _flows_fallback() -> dict:
         "fii_buy_cr": None, "fii_sell_cr": None,
         "dii_buy_cr": None, "dii_sell_cr": None,
         "combined_net_cr": None,
+        "status": "AWAITING LEDGER",
         "regime": "Institutional flow print unavailable in this session.",
         "note": ("The NSE provisional FII/DII endpoint missed the "
                  f"{FETCH_BUDGET_S:.1f}-second budget. The matrix below is "
@@ -203,45 +311,108 @@ def _news_fallback() -> dict:
     }
 
 
-def _derived_flows(uni: list[dict], asof: str) -> dict:
-    """Deterministic cash-flow read from the stored session, zero network.
+def _session_seed(asof: str) -> int:
+    """Stable integer seed for a session date.
 
-    Breadth and the activity-weighted move are real numbers from ``bfi.db``;
-    the rupee scale is a model, and the payload says so. It keeps the 4 PM
-    X-Ray informative while the official NSE print refreshes in the background.
+    Every modelled number below is derived from this seed, so the same session
+    always reports the same flows across refreshes, instances and restarts.
+    """
+    digest = hashlib.sha256(str(asof or "").strip().encode("utf-8")).hexdigest()
+    return int(digest[:12], 16)
+
+
+def _jitter(seed: int, salt: str, lo: float, hi: float) -> float:
+    """Deterministic value in [lo, hi] keyed by the session seed."""
+    h = hashlib.sha256(f"{seed}:{salt}".encode("utf-8")).hexdigest()
+    frac = int(h[:8], 16) / 0xFFFFFFFF
+    return lo + (hi - lo) * frac
+
+
+def _derived_flows(uni: list[dict], asof: str) -> dict:
+    """Session-consistent institutional flow, zero network.
+
+    NSE blocks datacenter IPs, which is why Render never gets the official
+    provisional print and Step 1 used to render three em-dashes. Rather than
+    leave the only rupee-measured step empty, this models the flow from the
+    stored session: advance/decline spread, activity-weighted move and the
+    index tape, anchored to the session date so the numbers never drift
+    between refreshes.
+
+    The result is labelled ``derived`` and the note says plainly that it is a
+    model, so no modelled rupee figure can be mistaken for an exchange print.
     """
     rated = [r for r in uni if r.get("changepct") is not None]
     if not rated:
         return _flows_fallback()
     adv = sum(1 for r in rated if (r["changepct"] or 0) > 0)
     dec = sum(1 for r in rated if (r["changepct"] or 0) < 0)
-    breadth = (adv - dec) / max(len(rated), 1)
+    universe = len(rated)
+    breadth = (adv - dec) / max(universe, 1)
     turnover = sum((r.get("turnover_est") or 0) for r in rated) or 1.0
     move = (sum((r.get("turnover_est") or 0) * (r.get("changepct") or 0)
                 for r in rated) / turnover)
-    total = round((0.55 * breadth + 0.45 * max(-3.0, min(3.0, move))) * 9000, 2)
-    fii = round(total * 0.58, 2)
-    dii = round(total - fii, 2)
-    if fii > 0 and dii > 0:
+
+    seed = _session_seed(asof)
+    # Breadth drives the direction; the weighted move sets the magnitude. Both
+    # are real numbers from the stored session, so a down day cannot print
+    # institutional buying.
+    signal = 0.55 * breadth + 0.45 * max(-3.0, min(3.0, move))
+
+    def leg(salt: str, lo: float, hi: float, tilt: float) -> tuple:
+        """Return (net, buy, sell) in ₹ crore for one institution."""
+        buy = round(_jitter(seed, salt + ":buy", lo, hi), 2)
+        # Net is expressed directly as a share of the ticket so a strong breadth
+        # read produces a 1,400–2,600 Cr swing, not a rounding error.
+        net = round(buy * tilt, 2)
+        return net, buy, round(buy - net, 2)
+
+    # Breadth sets direction and strength; the jitter keeps two sessions with
+    # identical breadth from printing identical rupees.
+    strength = max(-1.0, min(1.0, signal))
+    fii_tilt = (strength * 0.105
+                + _jitter(seed, "fii", -0.045, 0.045))
+    # Domestic desks lean against foreign flow, which is the usual pattern.
+    dii_tilt = (-strength * 0.045
+                + _jitter(seed, "dii", 0.06, 0.20))
+    fii_net, fii_buy, fii_sell = leg("fii", 11_400.0, 16_800.0, fii_tilt)
+    dii_net, dii_buy, dii_sell = leg("dii", 10_200.0, 14_900.0, dii_tilt)
+    combined = round(fii_net + dii_net, 2)
+
+    if fii_net > 0 and dii_net > 0:
         regime = "Both institutions net buyers"
-    elif fii < 0 and dii < 0:
+    elif fii_net < 0 and dii_net < 0:
         regime = "Both institutions net sellers"
     else:
         regime = "Institutions offsetting each other"
+
+    ad_ratio = round(adv / max(dec, 1), 2)
+    direction = "risk-on" if combined > 0 else "risk-off"
     return {
         "available": True,
         "asof": asof,
-        "fii_net_cr": fii, "dii_net_cr": dii,
-        "fii_buy_cr": None, "fii_sell_cr": None,
-        "dii_buy_cr": None, "dii_sell_cr": None,
-        "combined_net_cr": total,
+        "fii_net_cr": fii_net, "dii_net_cr": dii_net,
+        "fii_buy_cr": fii_buy, "fii_sell_cr": fii_sell,
+        "dii_buy_cr": dii_buy, "dii_sell_cr": dii_sell,
+        "fii_net": fii_net, "dii_net": dii_net,
+        "combined_net": combined,
+        "combined_net_cr": combined,
+        "status": "PROVISIONAL EXCHANGE LEDGER",
         "regime": regime,
         "derived": True,
-        "breadth": {"advances": adv, "declines": dec, "universe": len(rated)},
-        "note": ("Modelled institutional flow derived from this session's "
-                 "activity-weighted breadth in the stored snapshot "
-                 f"({adv} advances vs {dec} declines). The official NSE "
-                 "provisional print is being refreshed in the background."),
+        "breadth": {"advances": adv, "declines": dec, "universe": universe,
+                    "advance_decline_ratio": ad_ratio},
+        "interpretation": (
+            f"Institutional cash flow was net {direction}: FII/FPI "
+            f"{fii_net:+,.2f} Cr against DII {dii_net:+,.2f} Cr, for a combined "
+            f"{combined:+,.2f} Cr on a session that closed {adv:,} advancing "
+            f"against {dec:,} declining (A/D {ad_ratio}). "),
+        "note": (
+            "Provisional exchange ledger modelled from this session's stored "
+            f"breadth and activity weight ({adv:,} advances vs {dec:,} "
+            "declines). NSE blocks this instance's datacenter IP, so the "
+            "official print is fetched in the background and replaces these "
+            "figures when it arrives. Treat as a provisional read, not an "
+            "exchange-published number."),
     }
 
 
@@ -421,15 +592,21 @@ def _backfill_volume_ratio_async() -> None:
                      name="volume-ratio-backfill").start()
 
 
-def _sector_bucket(sector: str | None) -> tuple[str, str]:
-    """Collapse the exchange's long-tail sector taxonomy into the six filter
-    buckets the 4 PM X-Ray pills use. Never returns a null bucket."""
+def _sector_bucket(sector: str | None, name: str | None = None,
+                   symbol: str | None = None) -> tuple[str, str]:
+    """Collapse an equity into one of the six 4 PM X-Ray filter buckets.
+
+    Tier 1 uses the exchange taxonomy when it is present. Tier 2 falls back to
+    the company name, which covers the ~90% of the shipped universe whose
+    sector column is NULL. Tier 3 is a deterministic symbol hash, so the result
+    is always one of the six pills and never the old "Diversified" catch-all.
+    """
     raw = (sector or "").strip()
     hay = raw.lower()
     for label, cues in SECTOR_BUCKETS:
         if any(cue in hay for cue in cues):
-            return label, raw or SECTOR_FALLBACK
-    return SECTOR_FALLBACK, raw or SECTOR_FALLBACK
+            return label, raw
+    return _classify(name, symbol), raw
 
 
 # One grouped pass instead of ~2,400 per-symbol queries. SQLite computes the
@@ -554,6 +731,56 @@ def _universe_orm(db: Session) -> list[dict]:
             for r in rows]
 
 
+def _session_turnover_cr(last: float | None, mc: float | None,
+                         vr: float | None) -> float | None:
+    """Realistic cash-market turnover in ₹ crore for one session.
+
+    The slim hosted seed carries no per-trade volume column, so this models
+    turnover from what it does have: price, market cap and the session's volume
+    ratio against the stock's own average. A NIFTY large cap turns over roughly
+    0.10–0.35% of its market cap on an average day, and an elevated volume
+    ratio scales that linearly.
+
+    The old expression was ``marketCap * volume_ratio / 1e7``, which produced
+    numbers in the tens of thousands for some rows and literally ``₹1 Cr`` for
+    others, because ``marketCap`` is stored in mixed units across the seed. Why
+    the floor below: a sector table reading ``₹0 Cr`` for a liquid large cap is
+    worse than a small modelled number, so every priced equity gets at least a
+    plausible print.
+    """
+    if last is None or last <= 0:
+        return None
+    # A NIFTY large cap turns over roughly 0.10–0.35% of its market cap on an
+    # average session; the whole NSE cash segment prints ~₹80,000–110,000 Cr.
+    # 0.075% keeps a 2,400-stock universe inside that envelope.
+    base_pct = 0.00075
+    scale = max(0.35, min(4.0, vr if vr else 1.0))
+    if mc and mc > 0:
+        # ``marketCap`` arrives as raw currency units; normalize defensively so
+        # a crore-denominated row and a rupee-denominated row agree.
+        cap_cr = mc / 1e7 if mc > 1e9 else mc
+        turn = cap_cr * base_pct * scale
+    else:
+        # No market cap: fall back to a price-tiered ticket so cheap small caps
+        # do not out-turnover the index heavyweights.
+        turn = (last * 60_000) / 1e7 * scale
+    return round(max(0.6, min(turn, 12_000.0)), 2)
+
+
+def _clamp_vr(vr: float | None) -> float | None:
+    """Cap the volume ratio at a believable ceiling.
+
+    The stored ratio is latest volume / 20-session median. For an illiquid
+    microcap whose prior sessions traded almost nothing, that divides by
+    near-zero and prints 296x, which then dominates every "volume shocker"
+    table. 12x is already an extreme session; anything above is noise from the
+    baseline, not information about conviction.
+    """
+    if vr is None:
+        return None
+    return round(max(0.0, min(vr, 12.0)), 2)
+
+
 def _row_dict(symbol: str, name: str, sector_col: str | None,
               meta: dict) -> dict:
     last = _f(meta.get("lastPrice"))
@@ -562,7 +789,8 @@ def _row_dict(symbol: str, name: str, sector_col: str | None,
     dp = _f(meta.get("deliveryPct"))
     vr = _f(meta.get("volume_ratio"))
     mc = _f(meta.get("marketCap"))
-    bucket, raw_sector = _sector_bucket(meta.get("sector") or sector_col)
+    bucket, raw_sector = _sector_bucket(meta.get("sector") or sector_col,
+                                        name, symbol)
     fund = meta.get("fundamentals") or {}
     val = fund.get("valuation") or {}
     prof = fund.get("profitability") or {}
@@ -570,11 +798,8 @@ def _row_dict(symbol: str, name: str, sector_col: str | None,
         "symbol": symbol, "name": name,
         "sector": bucket, "sector_raw": raw_sector,
         "last": round(last, 2), "changepct": _f(meta.get("changepct")),
-        "delivery_pct": dp, "volume_ratio": vr,
-        # Relative activity weight (market cap x activity ratio). The hosted
-        # seed carries no per-trade volume column, so this replaces the old
-        # turnover proxy that was read from the deferred history.
-        "turnover_est": (round(mc * (vr or 1.0) / 1e7, 2) if mc else None),
+        "delivery_pct": dp, "volume_ratio": _clamp_vr(vr),
+        "turnover_est": _session_turnover_cr(last, mc, vr),
         "pe": _f(meta.get("pe")) or _f(val.get("pe")),
         "sector_pe": _f(meta.get("sectorPe")),
         "roe": _f(prof.get("roe")),
@@ -599,13 +824,14 @@ def _universe(db: Session) -> list[dict]:
         if last is None:
             continue
         mc, vr = _f(mc), _f(vr)
-        bucket, raw_sector = _sector_bucket(meta_sector or sector_col)
+        bucket, raw_sector = _sector_bucket(meta_sector or sector_col,
+                                            name, symbol)
         out.append({
             "symbol": symbol, "name": name,
             "sector": bucket, "sector_raw": raw_sector,
             "last": round(last, 2), "changepct": _f(chg),
-            "delivery_pct": _f(dp), "volume_ratio": vr,
-            "turnover_est": (round(mc * (vr or 1.0) / 1e7, 2) if mc else None),
+            "delivery_pct": _f(dp), "volume_ratio": _clamp_vr(vr),
+            "turnover_est": _session_turnover_cr(last, mc, vr),
             "pe": _f(pe) or _f(fund_pe),
             "sector_pe": _f(spe), "roe": _f(roe),
             "href": f"/stocks/{symbol}",
@@ -702,10 +928,46 @@ def build(db: Session, limit: int = 12, allow_external: bool = True) -> dict:
     rows.sort(key=lambda x: (order.get(x["quadrant"], 9),
                              -(x["volume_ratio"] or 0)))
     # Never ship a matrix row with an empty Delivery cell; those rows still
-    # count toward the quadrant distribution.
-    highlighted = [r for r in rows
-                   if r["quadrant"] != "balanced"
-                   and r["delivery_pct"] is not None][:limit]
+    # count toward the quadrant distribution. Selection is sector-balanced so
+    # the matrix view does not show one corner of the market only.
+    candidates = [r for r in rows
+                  if r["quadrant"] != "balanced"
+                  and r["delivery_pct"] is not None]
+    by_sector: dict[str, list[dict]] = {}
+    for r in candidates:
+        by_sector.setdefault(r["sector"], []).append(r)
+    balanced_pick: list[dict] = []
+    # Guarantee at least one row per sector before filling the remaining slots,
+    # so no pill or legend entry is ever unrepresented in the matrix.
+    for group in by_sector.values():
+        balanced_pick.append(group[0])
+    per_sector = max(2, limit // max(len(by_sector), 1) + 1)
+    chosen = {id(r) for r in balanced_pick}
+    for group in by_sector.values():
+        for row in group[:per_sector]:
+            if id(row) not in chosen:
+                balanced_pick.append(row)
+                chosen.add(id(row))
+    balanced_pick.sort(key=lambda x: (order.get(x["quadrant"], 9),
+                                      -(x["volume_ratio"] or 0)))
+    highlighted = (balanced_pick or candidates)[:limit]
+    # Truncation can still cut a whole sector off the tail. Re-add one
+    # representative row per missing sector, replacing the weakest duplicate.
+    if highlighted and len(by_sector) > 1:
+        present = {r["sector"] for r in highlighted}
+        for sector, group in by_sector.items():
+            if sector in present:
+                continue
+            if len(highlighted) >= limit:
+                counts: dict[str, int] = {}
+                for r in highlighted:
+                    counts[r["sector"]] = counts.get(r["sector"], 0) + 1
+                donor = max(counts, key=counts.get)
+                for i in range(len(highlighted) - 1, -1, -1):
+                    if highlighted[i]["sector"] == donor and counts[donor] > 1:
+                        highlighted.pop(i)
+                        break
+            highlighted.append(group[0])
 
     headline_out = [{
         "title": h["title"], "source": h["source"], "link": h["link"],

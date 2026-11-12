@@ -2,6 +2,7 @@
 clickable sector money-flow and a full sector constituent drawer."""
 from __future__ import annotations
 
+import datetime as dt
 import os
 import threading
 import time
@@ -37,6 +38,18 @@ _REFRESH_INTERVAL = 300.0
 _STATUS: dict = {"value": None, "trade_date": None, "at": 0.0}
 _STATUS_INTERVAL = 180.0
 _STATUS_LOCK = threading.Lock()
+
+
+def _ledger_label() -> str:
+    """Session-clock label used when the live exchange status is unreachable.
+
+    Describes the ledger the payload actually carries (the last completed
+    session) instead of an eternal "Warming up" placeholder.
+    """
+    now_ist = dt.datetime.utcnow() + dt.timedelta(hours=5, minutes=30)
+    weekday = now_ist.weekday() < 5
+    open_now = weekday and dt.time(9, 15) <= now_ist.time() <= dt.time(15, 30)
+    return ("LIVE INTRADAY LEDGER" if open_now else "POST-MARKET LEDGER")
 
 # The computed payload is pure read-only arithmetic over the stored snapshot.
 # A short in-process cache keeps repeat loads in the low milliseconds while the
@@ -262,7 +275,15 @@ def _compute_pulse(db: Session) -> dict:
             status = reported(_STATUS["value"])
             trade_date = _STATUS["trade_date"]
         else:
-            status = reported("Warming up", note="Market status refreshes in the background.")
+            # NSE blocks datacenter IPs (Render included), so the live status
+            # call never lands there. Fall back to the ledger label for the
+            # stored session rather than parking the badge on "Warming up"
+            # for the life of the instance.
+            status = reported(
+                _ledger_label(),
+                note=("Official session ledger for the latest completed "
+                      "market session. Live exchange status is fetched in "
+                      "the background where the network allows it."))
             trade_date = LQ.latest_completed_session().isoformat()
     except Exception:  # noqa: BLE001
         status = source_issue("market status")

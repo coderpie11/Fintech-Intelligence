@@ -15,6 +15,7 @@ type Sector = {
   delivered_turnover_share_pct: number;
   churn_turnover_share_pct: number;
   participation_tilt: number;
+  relative_tilt?: number;
   turnover_cr: number;
 };
 
@@ -33,6 +34,16 @@ type XRow = {
   href: string;
   delivery_z: { current: number; mean: number; z: number; sessions: number } | null;
   shock_type?: string;
+  action_note?: string;
+};
+
+type ContextCard = {
+  title: string;
+  detail: string;
+  source: string;
+  tone: string;
+  symbols: string[];
+  asof: string;
 };
 
 type XRayData = {
@@ -45,6 +56,9 @@ type XRayData = {
       available: boolean; asof: string | null;
       fii_net_cr: number | null; dii_net_cr: number | null;
       combined_net_cr: number | null; regime: string; note: string;
+      fii_buy_cr?: number | null; fii_sell_cr?: number | null;
+      dii_buy_cr?: number | null; dii_sell_cr?: number | null;
+      status?: string | null; interpretation?: string | null;
     };
     step_2_sector_tilt: {
       leaders: Sector[]; laggards: Sector[]; method: string;
@@ -55,6 +69,7 @@ type XRayData = {
       india_vix: { value: number | null; status: string; note: string };
       vix_regime: { value: string; status: string; note: string };
       indices: { slug: string; name: string; last: number | null; changepct: number | null }[];
+      headlines?: ContextCard[];
     };
   };
   sectors: Sector[];
@@ -66,25 +81,31 @@ type XRayData = {
   footer_note: string;
 };
 
-const SECTOR_GROUPS: { key: string; label: string; words: string[] }[] = [
-  { key: "all", label: "All Sectors", words: [] },
-  { key: "banking", label: "Banking & Finance", words: ["bank", "financ", "nbfc", "insur"] },
-  { key: "it", label: "IT & Tech", words: ["it ", "software", "technolog", "telecom", "digital"] },
-  { key: "defense", label: "Defense & Capex", words: ["defen", "capital goods", "infra", "ship", "aerospace", "engineering"] },
-  { key: "auto", label: "Auto & Retail", words: ["auto", "retail", "consumer", "apparel", "textile"] },
-  { key: "energy", label: "Energy & Metals", words: ["energy", "power", "metal", "oil", "gas", "mining"] },
-  { key: "fmcg", label: "FMCG & Pharma", words: ["fmcg", "pharma", "health", "food", "household"] },
+// Each pill maps to exactly one backend sector bucket. The backend classifies
+// every equity into one of these six labels (see streetpulse.SECTOR_BUCKETS),
+// so filtering is an exact match on the bucket instead of guessing at keyword
+// substrings in a display label. That mismatch is what used to leave the IT and
+// FMCG pills showing empty tables.
+const SECTOR_GROUPS: { key: string; label: string; bucket: string | null }[] = [
+  { key: "all", label: "All Sectors", bucket: null },
+  { key: "banking", label: "Banking & Finance", bucket: "BANKING & FINANCE" },
+  { key: "it", label: "IT & Tech", bucket: "IT & TECH" },
+  { key: "defense", label: "Defense & Capex", bucket: "DEFENSE & CAPEX" },
+  { key: "auto", label: "Auto & Retail", bucket: "AUTO & RETAIL" },
+  { key: "energy", label: "Energy & Metals", bucket: "ENERGY & METALS" },
+  { key: "fmcg", label: "FMCG & Pharma", bucket: "FMCG & PHARMA" },
 ];
 
 function matchesSector(sector: string | null, key: string): boolean {
   if (key === "all") return true;
-  const s = (sector || "").toLowerCase();
   const group = SECTOR_GROUPS.find((g) => g.key === key);
-  return !!group && group.words.some((w) => s.includes(w));
+  if (!group?.bucket) return true;
+  return (sector || "").toUpperCase() === group.bucket;
 }
 
 function SectorRow({ s, side }: { s: Sector; side: "up" | "down" }) {
   const v = Math.min(100, Math.abs(s.participation_tilt));
+  const rel = s.relative_tilt;
   return (
     <div className="py-1.5">
       <div className="flex items-center justify-between gap-2 text-[11.5px]">
@@ -94,6 +115,7 @@ function SectorRow({ s, side }: { s: Sector; side: "up" | "down" }) {
       <div className="mt-1"><Bar value={v} tone={side} /></div>
       <div className="muted text-[9.5px] mt-0.5 knum">
         {s.count} stocks · {s.advance} adv / {s.decline} dec · ₹{num(s.turnover_cr, 0)} Cr turnover
+        {rel !== undefined && side === "down" && <> · {signed(rel, 1)} pp vs market</>}
       </div>
     </div>
   );
@@ -199,9 +221,16 @@ export default function XRay() {
             <div className="muted text-[11px] mt-0.5">{s1?.regime}</div>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <Metric label="FII net" value={signed(s1?.fii_net_cr, 2)} tone={(s1?.fii_net_cr || 0) >= 0 ? "up" : "down"} />
-            <Metric label="DII net" value={signed(s1?.dii_net_cr, 2)} tone={(s1?.dii_net_cr || 0) >= 0 ? "up" : "down"} />
+            <Metric label="FII net" value={signed(s1?.fii_net_cr, 2)}
+                    sub={s1?.fii_buy_cr != null ? `₹${num(s1.fii_buy_cr, 0)} Cr bought · ₹${num(s1.fii_sell_cr, 0)} Cr sold` : undefined}
+                    tone={(s1?.fii_net_cr || 0) >= 0 ? "up" : "down"} />
+            <Metric label="DII net" value={signed(s1?.dii_net_cr, 2)}
+                    sub={s1?.dii_buy_cr != null ? `₹${num(s1.dii_buy_cr, 0)} Cr bought · ₹${num(s1.dii_sell_cr, 0)} Cr sold` : undefined}
+                    tone={(s1?.dii_net_cr || 0) >= 0 ? "up" : "down"} />
           </div>
+          {s1?.interpretation && (
+            <p className="text-[11.5px] leading-relaxed mt-2">{s1.interpretation}</p>
+          )}
           <Note>{s1?.note}</Note>
         </Panel>
 
@@ -214,7 +243,7 @@ export default function XRay() {
             <div>
               <div className="muted text-[9.5px] font-bold uppercase tracking-[0.13em] mb-1">Weakest delivery tilt</div>
               {(s2?.laggards || []).slice(0, 5).map((s) => <SectorRow key={s.sector} s={s} side="down" />)}
-              {!s2?.laggards?.length && <p className="muted text-[11px]">No sector had a negative tilt with enough breadth.</p>}
+              {!s2?.laggards?.length && <p className="muted text-[11px]">Sector tilts are still being reconstructed for this session.</p>}
             </div>
           </div>
           <Note>{s2?.method}</Note>
@@ -223,11 +252,11 @@ export default function XRay() {
 
       <Panel title="Step 3 — Stock-level confirmation" sub="Names where delivery and price agree with the sector tilt. Delivery Z compares the stock with its own 45-session history.">
         <div className="scroll-x">
-          <table className="w-full min-w-[760px] border-collapse">
+          <table className="w-full min-w-[980px] border-collapse">
             <thead>
               <tr style={{ background: "var(--surface-2)" }}>
-                {["Stock", "Sector", "Day", "Delivery", "Delivery Z", "Vol ×", "P/E"].map((h) => (
-                  <th key={h} className={`table-head px-3 py-2 ${h === "Stock" || h === "Sector" ? "text-left" : "text-right"}`}>{h}</th>
+                {["Stock", "Sector", "Day", "Delivery", "Delivery Z", "Vol ×", "P/E", "Read"].map((h) => (
+                  <th key={h} className={`table-head px-3 py-2 ${h === "Stock" || h === "Sector" || h === "Read" ? "text-left" : "text-right"}`}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -244,6 +273,7 @@ export default function XRay() {
                   <td className="px-3 py-2.5 text-right knum text-[12px]">{r.delivery_z ? <span className={r.delivery_z.z >= 0 ? "text-up" : "text-down"}>{signed(r.delivery_z.z, 2)}</span> : "—"}</td>
                   <td className="px-3 py-2.5 text-right knum text-[12px]">{num(r.volume_ratio, 2)}×</td>
                   <td className="px-3 py-2.5 text-right knum text-[12px]">{num(r.pe, 2)}</td>
+                  <td className="px-3 py-2.5 text-[10.5px] muted max-w-[220px]">{r.action_note || "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -300,6 +330,33 @@ export default function XRay() {
           <Note>{s4?.india_vix?.note} {s4?.vix_regime?.note}</Note>
         </Panel>
       </div>
+
+      {(s4?.headlines || []).length > 0 && (
+        <Panel title="Step 4 — Institutional catalysts & session narratives"
+               sub="Every card below is derived from the stored session tape: flows, breadth, rotation, volatility and the shockers behind them. No card is invented copy.">
+          <div className="grid sm:grid-cols-2 gap-2">
+            {(s4?.headlines || []).map((h, i) => (
+              <div key={i} className="rounded-lg px-3 py-2.5"
+                   style={{ border: "1px solid var(--line)", background: "var(--surface-2)" }}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="text-[11.5px] font-bold leading-snug">{h.title}</div>
+                  <Pill tone={h.tone === "BULLISH" ? "up" : h.tone === "CAUTIOUS" ? "down" : "accent"}>
+                    {h.tone}
+                  </Pill>
+                </div>
+                <div className="muted text-[10.5px] leading-snug mt-1">{h.detail}</div>
+                <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                  <span className="muted text-[9px] font-bold uppercase tracking-[0.1em]">{h.source}</span>
+                  {(h.symbols || []).slice(0, 4).map((sym) => (
+                    <Link key={sym} href={`/stocks/${sym}`}
+                          className="text-[10px] font-semibold hover:underline accent knum">{sym}</Link>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
 
       {(d.action_items || []).length > 0 && (
         <Panel title="Corporate actions in force" sub="Ex-dates and purposes from the exchange calendar — factual events, not trade ideas.">
