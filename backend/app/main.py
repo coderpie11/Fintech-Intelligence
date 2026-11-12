@@ -15,12 +15,33 @@ def _env_flag(name: str, default: str = "1") -> bool:
     return os.getenv(name, default).strip().lower() not in ("", "0", "false", "no")
 
 
+def _instrument_count() -> int:
+    """Cheap COUNT(*) — never loads row payloads."""
+    try:
+        from app.core.db import SessionLocal
+        from app.models.models import Instrument
+
+        db = SessionLocal()
+        try:
+            return int(db.query(Instrument).count())
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     create_all()
-    # Hosted 512 MB boxes set ENABLE_SCHEDULER=false: the shipped snapshot already
-    # holds every row, and boot-time warmups only add network scrapers to the
-    # cold start. Local dev leaves it unset, so warmups run exactly as before.
+    # A shipped snapshot already holds the whole universe. Rebuilding the pulse
+    # payload or the workspaces on boot would deserialise every instrument's
+    # multi-year history at once — the exact allocation that OOMs a 512 MB
+    # instance. Both hosted Render and any store with >1000 instruments start
+    # as a zero-allocation no-op; payloads are built lazily on first request.
+    if os.getenv("RENDER") or _instrument_count() > 1000:
+        yield
+        return
+    # Empty/local scratch databases still get the warm-up path below.
     if _env_flag("ENABLE_SCHEDULER"):
         # Warm the pulse payload before the first page view. This is a one-time
         # arithmetic pass over the stored snapshot; doing it here keeps every

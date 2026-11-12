@@ -2,11 +2,12 @@
 clickable sector money-flow and a full sector constituent drawer."""
 from __future__ import annotations
 
+import os
 import threading
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.core.db import get_db
 from app.data.adapters import nse_adapter as N
@@ -14,9 +15,18 @@ from app.models.models import CorporateEvent, Instrument
 from app.services import calc
 from app.services import live_quote as LQ
 from app.services.contextual import reported, source_issue
-from app.routes.equities import _snap
+from app.routes.equities import _loaded_history, _snap
 
 router = APIRouter(prefix="/pulse", tags=["market pulse"])
+
+# The slim hosted seed precomputes each row's return ladder in ``meta``, so the
+# pulse pass never needs the multi-year JSON column there. A local full store
+# has no such cache and still computes the ladder from history as before.
+_DEFER_HISTORY = bool(os.getenv("RENDER"))
+
+
+def _history_opts(query):
+    return query.options(defer(Instrument.history)) if _DEFER_HISTORY else query
 
 # Quote refresh runs off the request path. A 5-minute guard keeps a burst of
 # page loads from stacking up 120-symbol downloads, and the HTTP response is
@@ -48,7 +58,8 @@ def _background_refresh() -> None:
 
         s = SessionLocal()
         try:
-            candidates = s.query(Instrument).filter(Instrument.kind == "EQUITY").all()
+            candidates = _history_opts(
+                s.query(Instrument).filter(Instrument.kind == "EQUITY")).all()
 
             def _mcap(r: Instrument) -> float:
                 try:
@@ -58,7 +69,8 @@ def _background_refresh() -> None:
 
             candidates.sort(key=_mcap, reverse=True)
             LQ.list_rows(s, candidates[:120], cap=120)
-            idx_rows = s.query(Instrument).filter(Instrument.kind == "INDEX").all()
+            idx_rows = _history_opts(
+                s.query(Instrument).filter(Instrument.kind == "INDEX")).all()
             LQ.list_rows(s, idx_rows)
         except Exception:  # noqa: BLE001
             pass
@@ -93,7 +105,7 @@ def _returns(hist: list[dict]) -> dict:
 
 
 def _delivery_speed(r: Instrument) -> float | None:
-    hist = r.history or []
+    hist = _loaded_history(r)
     vols = [h.get("v") for h in hist[-21:] if h.get("v")]
     if len(vols) < 5:
         return None
@@ -102,7 +114,8 @@ def _delivery_speed(r: Instrument) -> float | None:
 
 
 def _sector_rows(db: Session, sector: str | None = None) -> list[dict]:
-    q = db.query(Instrument).filter(Instrument.kind == "EQUITY")
+    q = _history_opts(
+        db.query(Instrument).filter(Instrument.kind == "EQUITY"))
     rows = q.all()
     out = []
     for r in rows:
@@ -115,8 +128,14 @@ def _sector_rows(db: Session, sector: str | None = None) -> list[dict]:
         sec = snap["sector"] or "Unclassified"
         if sector and sec.lower() != sector.lower():
             continue
-        hist = r.history or []
-        rets = _returns(hist)
+        # The seed precomputes the ladder and volume ratio. Only a row without
+        # the cache pays for its (already loaded) history.
+        rets = m.get("returns")
+        if not isinstance(rets, dict):
+            rets = _returns(_loaded_history(r))
+        vol_ratio = m.get("volume_ratio")
+        if vol_ratio is None:
+            vol_ratio = _delivery_speed(r)
         out.append({
             "symbol": r.symbol, "name": r.name, "sector": sec,
             "last": snap["last"]["value"], "changepct": snap["changepct"]["value"],
@@ -126,7 +145,7 @@ def _sector_rows(db: Session, sector: str | None = None) -> list[dict]:
             "pe": snap["pe"]["value"], "pb": snap["pb"]["value"],
             "roe": (m.get("fundamentals") or {}).get("profitability", {}).get("roe"),
             "delivery_pct": m.get("deliveryPct"),
-            "volume_ratio": _delivery_speed(r),
+            "volume_ratio": vol_ratio,
             "href": f"/stocks/{r.symbol}",
         })
     return out
@@ -207,7 +226,8 @@ def _compute_pulse(db: Session) -> dict:
                         "count": sec["count"]})
     sectors.sort(key=lambda x: x["avg_change"], reverse=True)
 
-    idx_rows = db.query(Instrument).filter(Instrument.kind == "INDEX").all()
+    idx_rows = _history_opts(
+        db.query(Instrument).filter(Instrument.kind == "INDEX")).all()
     indices = [{"slug": (r.meta or {}).get("slug") or r.slug, "name": r.name,
                 "last": (r.meta or {}).get("last"),
                 "changepct": (r.meta or {}).get("changepct")}

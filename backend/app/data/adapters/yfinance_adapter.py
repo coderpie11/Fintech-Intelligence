@@ -12,10 +12,24 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
-import pandas as pd
-import yfinance as yf
 
 from app.core.config import cache_get, cache_set
+
+# yfinance imports pandas, which costs tens of megabytes of resident memory.
+# Load it on the first network call instead of during app import, so a health
+# probe or a stored-snapshot page never pays for it.
+_PD = None
+_YF = None
+
+
+def _libs():
+    global _PD, _YF
+    if _YF is None:
+        import pandas as _pandas
+        import yfinance as _yfinance
+
+        _PD, _YF = _pandas, _yfinance
+    return _PD, _YF
 
 PERIODS = {"3m": "3mo", "6m": "6mo", "1y": "1y", "3y": "3y", "5y": "5y",
            "10y": "10y", "max": "max"}
@@ -40,6 +54,7 @@ def _ticker(ticker: str) -> str:
 
 # ------------------------------------------------------------------ history
 def history(ticker: str, period: str = "5y") -> list[dict]:
+    _, yf = _libs()
     ticker = _ticker(ticker)
     # The cache key carries the IST date so a new trading session always
     # refreshes the daily series instead of serving yesterday's last candle.
@@ -128,6 +143,7 @@ def live_sessions(ticker: str, period: str = "5d", interval: str = "5m") -> list
     Both the quote reconciler and the chart read this same cache entry, so the
     header price is guaranteed to be the final candle that the chart draws.
     """
+    _, yf = _libs()
     ticker = _ticker(ticker)
     key = f"yf:live:{ticker}:{interval}:{period}"
     hit = cache_get(key)
@@ -151,6 +167,7 @@ def live_sessions_batch(tickers: list[str], period: str = "5d",
     Cached per ticker for 15 seconds. Only cache misses are downloaded, in
     chunks, so overlapping list pages reuse the same work.
     """
+    pd, yf = _libs()
     uniq = list(dict.fromkeys(_ticker(t) for t in tickers if t))
     out: dict[str, list[dict]] = {}
     missing: list[str] = []
@@ -318,6 +335,7 @@ def search(query: str, count: int = 15) -> list[dict]:
 
 # ------------------------------------------------------------------ info
 def info(ticker: str) -> dict:
+    _, yf = _libs()
     ticker = _ticker(ticker)
     """Full Yahoo quoteSummary info, cached. Returns {} when throttled."""
     key = f"yf:info:{ticker}"
@@ -334,6 +352,7 @@ def info(ticker: str) -> dict:
 
 
 def fast_info(ticker: str) -> dict:
+    _, yf = _libs()
     ticker = _ticker(ticker)
     try:
         fi = yf.Ticker(ticker).fast_info
@@ -452,6 +471,7 @@ def _periods(df) -> list[str]:
 def statements(ticker: str) -> dict:
     """Five annual periods + five recent quarters, normalised to canonical
     line items. Cached for six hours; never fabricates a missing line."""
+    _, yf = _libs()
     key = f"yf:stmts:{ticker}"
     ticker = _ticker(ticker)
     key = f"yf:stmts:{ticker}"

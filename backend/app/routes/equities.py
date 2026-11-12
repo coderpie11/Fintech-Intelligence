@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session, defer
 
 from app.core.db import get_db
@@ -78,6 +79,21 @@ def _extra(row: Instrument) -> dict:
     return (row.meta or {}).get("extra") or {}
 
 
+def _loaded_history(row: Instrument) -> list:
+    """Return ``row.history`` only when it is already in memory.
+
+    List/search queries defer the multi-year JSON column. Touching it there
+    would silently issue one SELECT per row (2,400 on the screener), so this
+    helper treats an unloaded attribute as an empty series.
+    """
+    try:
+        if "history" in sa_inspect(row).unloaded:
+            return []
+    except Exception:  # noqa: BLE001
+        pass
+    return row.history or []
+
+
 def _snap(r: Instrument) -> dict:
     m = r.meta or {}
     x = _extra(r)
@@ -90,7 +106,7 @@ def _snap(r: Instrument) -> dict:
     high_v = m.get("high")
     low_v = m.get("low")
     if None in (open_v, prev_v, high_v, low_v):
-        tail = (r.history or [])[-2:]
+        tail = _loaded_history(r)[-2:]
         last_bar = tail[-1] if tail else {}
         prev_bar = tail[-2] if len(tail) > 1 else {}
         if open_v is None:

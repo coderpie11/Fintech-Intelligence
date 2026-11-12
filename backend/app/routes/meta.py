@@ -3,7 +3,7 @@ and the module refresh trigger."""
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.core.config import FREE_SOURCE_NOTE, cache_get
 from app.core.db import get_db, SessionLocal
@@ -19,7 +19,10 @@ router = APIRouter(tags=["system"])
 
 @router.get("/health")
 def health():
-    return {"status": "ok", "service": "Fintech Intelligence API", "version": "1.0.0"}
+    from app.services.live_quote import live_quotes_enabled
+
+    return {"status": "ok", "service": "Fintech Intelligence API", "version": "1.0.0",
+            "live_quotes": bool(live_quotes_enabled())}
 
 
 @router.get("/search")
@@ -46,7 +49,7 @@ def search(q: str, limit: int = 12, db: Session = Depends(get_db)):
     # ---------------------------------------------------------- instruments
     # Substring first (symbol/name), then fuzzy over the whole table. 2,500
     # discovery rows make a full scan cheap and catch "Orient" / "Paras".
-    all_rows = db.query(Instrument).all()
+    all_rows = db.query(Instrument).options(defer(Instrument.history)).all()
     ranked = fuzzy.rank(q, all_rows,
                         lambda r: f"{r.symbol} {r.name} {r.sector or ''}",
                         limit=limit + 8, floor=0.68)
@@ -161,6 +164,7 @@ def _build_preload(db: Session) -> dict:
 
     # ---------------------------------------------------------- instruments
     for r in (db.query(Instrument)
+                .options(defer(Instrument.history))
                 .filter(Instrument.kind.in_(
                     ("EQUITY", "INDEX", "ETF", "REIT", "INVIT", "COMMODITY")))
                 .all()):

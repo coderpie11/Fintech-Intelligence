@@ -317,8 +317,17 @@ def _churn(history: list[dict], db: Session | None = None) -> dict:
 
 def _is_live_series(navs: list | None, min_points: int = 1000) -> bool:
     """A usable NAV series: enough depth and a recent observation. This is the
-    same rule the list endpoint uses, so peers never point at dead schemes."""
-    if not navs or len(navs) < min_points:
+    same rule the list endpoint uses, so peers never point at dead schemes.
+
+    The slim production seed trims each series to 120 points but pins the
+    full-history return ladder on the last point, so a trimmed series with that
+    marker is just as usable as a 1000-point one.
+    """
+    if not navs:
+        return False
+    trimmed = (isinstance(navs[-1], dict)
+               and isinstance(navs[-1].get("_returns"), dict))
+    if len(navs) < (120 if trimmed else min_points):
         return False
     try:
         return (dt.date.today() - dt.date.fromisoformat(navs[-1]["date"])).days <= 12

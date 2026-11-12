@@ -37,10 +37,10 @@ DB_URL = f"sqlite:///{DB_PATH}"
 # a host with a persistent disk if you want to seed incrementally there.
 # ---------------------------------------------------------------------------
 SNAPSHOT_PATH = BASE_DIR / "data" / "seed" / "bfi.db.gz"
-# The shipped snapshot holds the full seeded store (~390 MB uncompressed), so
-# anything materially smaller than ~150 MB is a schema-only/empty database and
+# The shipped snapshot is the slim production store (~74 MB uncompressed), so
+# anything materially smaller than ~50 MB is a schema-only/empty database and
 # must be replaced by the snapshot before the app serves traffic.
-_SNAPSHOT_MIN_BYTES = 150 * 1024 * 1024
+_SNAPSHOT_MIN_BYTES = 50 * 1024 * 1024
 
 
 SNAPSHOT_STATE = {"restored": False, "error": None, "path": None}
@@ -60,7 +60,9 @@ def restore_snapshot_if_missing() -> bool:
     try:
         tmp = DB_PATH.with_name(DB_PATH.name + ".restoring")
         with gzip.open(snapshot, "rb") as src, open(tmp, "wb") as dst:
-            shutil.copyfileobj(src, dst, 1 << 20)
+            # 64 KB chunks keep the decompressor's peak buffer tiny on a 512 MB
+            # container; never read the whole file into memory.
+            shutil.copyfileobj(src, dst, 1 << 16)
         # A stale WAL/SHM pair from the empty database would be replayed over
         # the restored file, so drop the sidecars before swapping it in.
         for suffix in ("-wal", "-shm"):

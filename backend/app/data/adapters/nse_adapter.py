@@ -12,9 +12,15 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
-from jugaad_data.nse import NSELive
 
 from app.core.config import DATA_DIR, NSE_THROTTLE, cache_get, cache_set
+
+# jugaad_data pulls in pandas; import it only when a live NSE call is made so
+# the API process can boot from the snapshot without paying that cost.
+def _nse_live():
+    from jugaad_data.nse import NSELive
+
+    return NSELive()
 
 _lock = threading.Lock()
 _last_call = [0.0]
@@ -40,7 +46,7 @@ class NseApi:
 
     def session(self) -> NSELive:
         if _session_holder[0] is None:
-            _session_holder[0] = NSELive()
+            _session_holder[0] = _nse_live()
         return _session_holder[0]
 
     def _call(self, name: str, fn):
@@ -60,7 +66,7 @@ class NseApi:
                 last_err = e
                 # many NSE failures are stale-cookie failures: rebuild session
                 try:
-                    _session_holder[0] = NSELive()
+                    _session_holder[0] = _nse_live()
                 except Exception:  # noqa: BLE001
                     pass
                 time.sleep(1.5 * (attempt + 1))

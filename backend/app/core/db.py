@@ -1,17 +1,29 @@
 """SQLite (local) session factory. The schema is plain-SQLAlchemy so the same
 models run on PostgreSQL when the project moves to its deployment stack."""
+import os
+
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.core.config import DB_URL
 
+_RENDER = bool(os.getenv("RENDER"))
 engine = create_engine(DB_URL, connect_args={"check_same_thread": False})
 
 
 @event.listens_for(engine, "connect")
 def _sqlite_pragmas(dbapi_conn, _record):
     cur = dbapi_conn.cursor()
-    cur.execute("PRAGMA journal_mode=WAL")
+    if _RENDER:
+        # 512 MB container: keep SQLite's page cache small, spill sorts to disk
+        # and forbid mmap. WAL also keeps a growing sidecar of shared memory,
+        # so the hosted instance uses the rollback journal instead.
+        cur.execute("PRAGMA journal_mode=DELETE")
+        cur.execute("PRAGMA cache_size=-8000")
+        cur.execute("PRAGMA temp_store=FILE")
+        cur.execute("PRAGMA mmap_size=0")
+    else:
+        cur.execute("PRAGMA journal_mode=WAL")
     cur.execute("PRAGMA foreign_keys=ON")
     # WAL still allows only one writer at a time. Without a busy timeout a
     # second request that tries to write while another commits fails almost

@@ -7,7 +7,7 @@ import math
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.core.db import get_db
 from app.data.adapters import nse_adapter as N
@@ -151,7 +151,9 @@ def _env(v, what: str = "metric", nd: int | None = None) -> dict:
 
 @router.get("")
 def list_indices(expand: bool = Query(False), db: Session = Depends(get_db)):
-    rows = (db.query(Instrument).filter(Instrument.kind == "INDEX").all())
+    rows = (db.query(Instrument)
+            .options(defer(Instrument.history))
+            .filter(Instrument.kind == "INDEX").all())
     by_slug = {slug_for(r): r for r in rows}
     shown: list[Instrument] = []
     for spec in INDICES:
@@ -171,7 +173,6 @@ def list_indices(expand: bool = Query(False), db: Session = Depends(get_db)):
         if not r:
             continue
         m = r.meta or {}
-        hist = r.history or []
         out.append({
             "slug": slug,
             "symbol": r.symbol,

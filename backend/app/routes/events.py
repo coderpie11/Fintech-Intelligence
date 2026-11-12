@@ -7,7 +7,7 @@ import re
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.core.db import get_db
 from app.models.models import CorporateEvent, Instrument
@@ -270,7 +270,9 @@ def list_events(kind: str | None = None, q: str | None = None,
             rows = _synthetic_events(resolved, today, kind or "BOARD", need=2)
 
     prices: dict[str, dict] = {}
-    for inst in (db.query(Instrument).filter(Instrument.kind == "EQUITY").all()):
+    for inst in (db.query(Instrument)
+                 .options(defer(Instrument.history))
+                 .filter(Instrument.kind == "EQUITY").all()):
         prices[inst.symbol.upper()] = inst.meta or {}
 
     items = []

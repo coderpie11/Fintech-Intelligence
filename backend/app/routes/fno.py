@@ -11,7 +11,7 @@ import math
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.core.db import get_db
 from app.data.adapters import nse_adapter as N
@@ -330,7 +330,9 @@ def underlyings(limit: int = Query(220, ge=1, le=400),
                for k, v in FNO_INDICES.items()]
     indices.append({"symbol": "SENSEX", "name": "SENSEX", "kind": "INDEX",
                     "lot_size": LOT_SIZES.get("SENSEX")})
-    rows = db.query(Instrument).filter(Instrument.kind == "EQUITY").all()
+    rows = (db.query(Instrument)
+            .options(defer(Instrument.history))
+            .filter(Instrument.kind == "EQUITY").all())
 
     def mc(r):
         try:

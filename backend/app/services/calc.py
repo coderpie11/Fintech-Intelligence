@@ -4,9 +4,22 @@ computed here (spec: Custom Python Calculation Dominance)."""
 from __future__ import annotations
 
 import math
-from scipy.stats import norm
 
 # ---------- Black-Scholes option greeks -----------------
+# scipy.stats.norm costs ~25 MB of resident imports on a 512 MB instance and
+# only a CDF/PDF is needed here, so keep the maths in stdlib.
+
+_SQRT2 = math.sqrt(2.0)
+_SQRT2PI = math.sqrt(2.0 * math.pi)
+
+
+def _norm_cdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(x / _SQRT2))
+
+
+def _norm_pdf(x: float) -> float:
+    return math.exp(-0.5 * x * x) / _SQRT2PI
+
 
 def _d1(S, K, T, r, sigma):
     return (math.log(S / K) + (r + sigma * sigma / 2) * T) / (sigma * math.sqrt(T))
@@ -19,20 +32,21 @@ def bsm(S: float, K: float, T: float, r: float, sigma: float, q=0.0) -> dict:
     d1, d2 = _d1(S, K, T, r, sigma), 0.0
     d2 = d1 - sigma * math.sqrt(T)
     disc_r, disc_q = math.exp(-r * T), math.exp(-q * T)
-    N = norm.cdf
+    N = _norm_cdf
+    pdf = _norm_pdf
     call = S * disc_q * N(d1) - K * disc_r * N(d2)
     put = K * disc_r * N(-d2) - S * disc_q * N(-d1)
-    theta_c = (-S * disc_q * norm.pdf(d1) * sigma / (2 * math.sqrt(T))
+    theta_c = (-S * disc_q * pdf(d1) * sigma / (2 * math.sqrt(T))
                - r * K * disc_r * N(d2) + q * S * disc_q * N(d1)) / 365
-    theta_p = (-S * disc_q * norm.pdf(d1) * sigma / (2 * math.sqrt(T))
+    theta_p = (-S * disc_q * pdf(d1) * sigma / (2 * math.sqrt(T))
                + r * K * disc_r * N(-d2) - q * S * disc_q * N(-d1)) / 365
     return {
         "call": round(call, 2), "put": round(put, 2),
         "delta_call": round(disc_q * N(d1), 4),
         "delta_put": round(-disc_q * N(-d1), 4),
-        "gamma": round(norm.pdf(d1) * disc_q / (S * sigma * math.sqrt(T)), 6),
+        "gamma": round(pdf(d1) * disc_q / (S * sigma * math.sqrt(T)), 6),
         "theta_call": round(theta_c, 4), "theta_put": round(theta_p, 4),
-        "vega": round(S * disc_q * norm.pdf(d1) * math.sqrt(T) / 100, 4),
+        "vega": round(S * disc_q * pdf(d1) * math.sqrt(T) / 100, 4),
         "pop_call": round(N(d2) * 100, 2), "pop_put": round(N(-d2) * 100, 2),
     }
 
@@ -248,7 +262,17 @@ def reverse_dcf_growth(fcff_millions: float, terminal_pct: float, wacc_pct: floa
 # ---------- Mutual-fund metrics -------------------------
 
 def nav_returns(navs: list[dict]) -> dict:
-    """1W/1M/3M/6M/1Y/3Y/5Y point-to-point returns from an ascending NAV series."""
+    """1W/1M/3M/6M/1Y/3Y/5Y point-to-point returns from an ascending NAV series.
+
+    A slim seed trims long NAV series to the latest 120 observations and pins
+    the returns computed from the full history on the last point as
+    ``_returns``. Honour that cache so 1Y/3Y/5Y stay accurate without shipping
+    five years of NAVs per scheme.
+    """
+    if navs and isinstance(navs[-1], dict):
+        pre = navs[-1].get("_returns")
+        if isinstance(pre, dict):
+            return pre
     if not navs or len(navs) < 2:
         return {k: None for k in ("1w", "1m", "3m", "6m", "1y", "3y", "5y")}
     vals = [n["nav"] for n in navs]
