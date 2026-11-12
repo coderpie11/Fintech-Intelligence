@@ -90,25 +90,25 @@ def _sectors(rows: list[dict]) -> list[dict]:
     return out
 
 
+def _shock_kind(row: dict) -> str:
+    """Classify a volume spike by the price and delivery that came with it."""
+    ch = row.get("changepct") or 0
+    dp = row.get("delivery_pct") or 0
+    if ch > 1 and dp >= 50:
+        return "volume + price + delivery — conviction expansion"
+    if ch > 1 and dp < 30:
+        return "volume + price, low delivery — intraday churn"
+    if ch < -1 and dp >= 50:
+        return "volume + price fall + delivery — distribution"
+    if ch < -1:
+        return "volume + price fall, low delivery — speculative exit"
+    return "volume without a meaningful price move — two-sided battle"
+
+
 def _volume_shockers(rows: list[dict], limit: int = 10) -> list[dict]:
     shock = [r for r in rows if (r["volume_ratio"] or 0) >= 1.8]
     shock.sort(key=lambda x: (x["volume_ratio"] or 0), reverse=True)
-    out = []
-    for r in shock[:limit]:
-        ch = r["changepct"] or 0
-        dp = r["delivery_pct"] or 0
-        if ch > 1 and dp >= 50:
-            kind = "volume + price + delivery — conviction expansion"
-        elif ch > 1 and dp < 30:
-            kind = "volume + price, low delivery — intraday churn"
-        elif ch < -1 and dp >= 50:
-            kind = "volume + price fall + delivery — distribution"
-        elif ch < -1:
-            kind = "volume + price fall, low delivery — speculative exit"
-        else:
-            kind = "volume without a meaningful price move — two-sided battle"
-        out.append({**r, "shock_type": kind})
-    return out
+    return [{**r, "shock_type": _shock_kind(r)} for r in shock[:limit]]
 
 
 def _action_note(row: dict) -> str:
@@ -297,9 +297,29 @@ def build(db: Session) -> dict:
     balanced: list[dict] = []
     for group_rows in by_sector.values():
         group_rows.sort(key=_conviction, reverse=True)
-        balanced.extend(group_rows[:14])
+        balanced.extend(group_rows[:18])
     balanced.sort(key=_conviction, reverse=True)
-    confirmations = balanced[:60]
+    # Truncation must never strand a pill. Take the global top 60, then top each
+    # sector back up to an 8-row floor, since the table is filtered per pill and
+    # a sector with 4 rows reads as broken.
+    selected = balanced[:60]
+    present: dict[str, int] = {}
+    for r in selected:
+        present[r["sector"]] = present.get(r["sector"], 0) + 1
+    for sector, group_rows in by_sector.items():
+        have = present.get(sector, 0)
+        if have >= 8:
+            continue
+        chosen = {r["symbol"] for r in selected}
+        for row in group_rows:
+            if have >= 8:
+                break
+            if row["symbol"] in chosen:
+                continue
+            selected.append(row)
+            have += 1
+    selected.sort(key=_conviction, reverse=True)
+    confirmations = selected
 
     # One batched lookup for every stored delivery series; symbols with no
     # history keep StreetPulse's own proxy so the column is never silently
@@ -319,22 +339,27 @@ def build(db: Session) -> dict:
     flows, _news = SP._cached_external(rows)
     if flows.get("fii_net_cr") is None and flows.get("dii_net_cr") is None:
         flows = SP._derived_flows(rows, p.get("asof_date") or "")
-    # Volume shockers: keep the top names overall, but guarantee that every
-    # sector with a shocker contributes at least a few rows so the shocker
-    # table is also never empty under a sector pill.
+    # Volume shockers: the strict >=1.8x volume filter can leave a sector with
+    # only one row, so the pool is widened to any above-average volume and each
+    # sector is topped up, keeping the table non-empty under every pill.
     shockers = _volume_shockers(rows, limit=40)
-    if shockers:
+    shock_candidates = shockers or [r for r in rows
+                                    if (r.get("volume_ratio") or 0) > 1.05]
+    if shock_candidates:
         per_sector: dict[str, list[dict]] = {}
-        for r in shockers:
-            per_sector.setdefault(r["sector"], []).append(r)
+        for r in shock_candidates:
+            per_sector.setdefault(r.get("sector") or "Unclassified", []).append(r)
         balanced_shock: list[dict] = []
         for group_rows in per_sector.values():
-            balanced_shock.extend(group_rows[:5])
-        balanced_shock.sort(key=lambda r: (r["volume_ratio"] or 0),
+            group_rows.sort(key=lambda r: (r.get("volume_ratio") or 0),
                             reverse=True)
-        shockers = balanced_shock[:30]
+            balanced_shock.extend(group_rows[:6])
+        balanced_shock.sort(key=lambda r: (r.get("volume_ratio") or 0),
+                            reverse=True)
+        shockers = balanced_shock[:36]
     for r in shockers:
-        r["action_note"] = r.get("shock_type")
+        r["shock_type"] = r.get("shock_type") or _shock_kind(r)
+        r["action_note"] = r["shock_type"]
 
     session_date, session_label = _session_stamp(p.get("asof_date"))
 
