@@ -7,6 +7,9 @@ Run against a live server or the app directly:
 
 Checks every contract the frontend relies on, for ALL SECTORS and for each of
 the six sector pills, so an empty table or a dash can never ship unnoticed.
+
+The ``--url`` path is deliberately stdlib-only: CI runs it on a bare runner
+with no requirements installed.
 """
 from __future__ import annotations
 
@@ -37,16 +40,36 @@ def check(cond: bool, msg: str) -> None:
         FAILURES.append(msg)
 
 
-def load(url: str | None) -> tuple[dict, dict]:
+def load(url: str | None, attempts: int = 1,
+         wait: float = 20.0) -> tuple[dict, dict]:
     if url:
+        import time as _time
+        import urllib.error
         import urllib.request
 
-        def get(path):
-            with urllib.request.urlopen(f"{url.rstrip('/')}/api/v1{path}",
-                                        timeout=120) as r:
-                return json.loads(r.read().decode())
+        last: Exception | None = None
+        for attempt in range(1, max(attempts, 1) + 1):
+            try:
+                def get(path):
+                    with urllib.request.urlopen(
+                            f"{url.rstrip('/')}/api/v1{path}",
+                            timeout=120) as r:
+                        return json.loads(r.read().decode())
 
-        return get("/quant-hub/xray"), get("/quant-hub/streetpulse")
+                data = (get("/quant-hub/xray"), get("/quant-hub/streetpulse"))
+                if attempt > 1:
+                    print(f"reachable on attempt {attempt}")
+                return data
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError,
+                    OSError) as exc:
+                last = exc
+                # A fresh deploy 500s or refuses connections until the new
+                # build is healthy, so wait it out instead of failing the run.
+                if attempt < attempts:
+                    print(f"attempt {attempt}/{attempts} failed ({exc}); "
+                          f"retrying in {wait:.0f}s")
+                    _time.sleep(wait)
+        raise SystemExit(f"could not load {url} after {attempts} attempts: {last}")
 
     from app.core.db import SessionLocal
     from app.services.ai_engine import xray
@@ -105,10 +128,16 @@ def check_blocked_network() -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default=None)
+    ap.add_argument("--url", default=None,
+                    help="Base URL of a running instance, e.g. "
+                         "https://host.onrender.com (omit to run in-process)")
+    ap.add_argument("--attempts", type=int, default=1,
+                    help="Retries while a deploy settles (default 1)")
+    ap.add_argument("--wait", type=float, default=20.0,
+                    help="Seconds between retries (default 20)")
     args = ap.parse_args()
 
-    d, sp = load(args.url)
+    d, sp = load(args.url, attempts=args.attempts, wait=args.wait)
 
     # ------------------------------------------------------- Step 1: flows
     s1 = d["chain"]["step_1_official_flows"]

@@ -1,5 +1,7 @@
 # Fintech Intelligence — India Market Research Terminal
 
+[![CI](https://github.com/coderpie11/Fintech-Intelligence/actions/workflows/ci.yml/badge.svg)](https://github.com/coderpie11/Fintech-Intelligence/actions/workflows/ci.yml)
+
 A local-first, facts-first market intelligence platform for Indian capital
 markets. It unifies equities, indices, F&O, IPOs, mutual funds, ETFs, bonds,
 commodities, REITs/InvITs, corporate events, a 4 PM market pulse, an AI-quant
@@ -227,6 +229,37 @@ hits stay on the fast path.
 - Fund holdings and TERs come from disclosed monthly portfolios and lag by up to
   a month.
 - The paper-trading sandbox never touches a broker or a real order book.
+
+---
+
+## Verification
+
+The 4 PM Market X-Ray and StreetPulse Matrix are the two surfaces most likely to
+go half-empty: they depend on a sector taxonomy that is NULL for most of the
+universe and on a NSE flow feed that blocks datacenter IPs. Both now fail loudly
+instead of silently.
+
+```bash
+# In-process: asserts the whole payload contract from the stored snapshot
+python backend/scripts/verify_xray.py
+
+# Against any running instance (stdlib only; waits for a cold deploy to wake)
+python backend/scripts/verify_xray.py --url https://<host> --attempts 10 --wait 30
+```
+
+The check covers, for ALL SECTORS and each of the six sector pills:
+
+- Step 1 carries non-null FII and DII net, buy and sell legs, and a combined
+  net — including when NSE returns 403 (simulated on every offline run).
+- The status badge is never `WARMING UP` and the summary has all 4 bullets.
+- No stock is left in the old `Diversified` bucket.
+- Leaders and laggards each have >= 3 sectors above ₹100 Cr turnover.
+- Every pill has >= 5 Step 3 rows and >= 1 volume shocker.
+- Step 4 has >= 5 grounded context cards and a populated index tape.
+
+`.github/workflows/ci.yml` runs the tests, the offline contract check, the
+frontend typecheck and build, and then — on `main` only — the same contract
+check against the live Render deployment once it settles.
 
 ---
 
